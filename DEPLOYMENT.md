@@ -29,7 +29,6 @@ docker run -d \
   -e DATABASE_URL=/app/.data/app.db \
   -e VIP_INIT_CODES="请改成你的激活码1,请改成你的激活码2" \
   -e VIP_SESSION_DAYS=30 \
-  -e ONLINE_BASE_COUNT=0 \
   douyin-parser
 ```
 
@@ -105,7 +104,6 @@ docker run -d \
   -e DATABASE_URL=/app/.data/app.db \
   -e VIP_INIT_CODES="请改成你的激活码1,请改成你的激活码2" \
   -e VIP_SESSION_DAYS=30 \
-  -e ONLINE_BASE_COUNT=0 \
   douyin-parser
 ```
 
@@ -113,7 +111,6 @@ docker run -d \
 
 ```bash
 curl "https://dy.devforai.cn/api/v1/parse?url=https://v.douyin.com/xxxx/"
-curl "https://dy.devforai.cn/api/v1/online"
 curl -X POST "https://dy.devforai.cn/api/v1/vip/activate" \
   -H "Content-Type: application/json" \
   -d '{"code":"你的激活码"}'
@@ -127,7 +124,6 @@ curl -X POST "https://dy.devforai.cn/api/v1/vip/activate" \
 | `DATABASE_URL` | `.data/app.db` | 会员激活码 SQLite 数据库路径 |
 | `VIP_INIT_CODES` | `VIP-DEMO-2026` | 初始激活码，逗号分隔 |
 | `VIP_SESSION_DAYS` | `30` | 会员会话有效天数 |
-| `ONLINE_BASE_COUNT` | `0` | 在线人数基础值 |
 
 ## 8. 页面功能
 
