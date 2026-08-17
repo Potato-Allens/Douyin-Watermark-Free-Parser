@@ -15,6 +15,10 @@ describe("api routes", () => {
     const html = await response.text();
     expect(html).toContain("抖音视频解析");
     expect(html).toContain('id="onlineCount"');
+
+    const icon = await app.request("/favicon.ico");
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toContain("image/svg+xml");
   });
 
   it("keeps /api/hello compatibility message when url is missing", async () => {
@@ -227,6 +231,15 @@ describe("api routes", () => {
       });
       expect(code.status).toBe(200);
       expect((await code.json()).data.plan_id).toBe("team");
+
+      const audit = await app.request("/api/admin/audit-logs?limit=5", { headers: { authorization: "Bearer test-admin-token" } });
+      const auditBody = await audit.json();
+      expect(audit.status).toBe(200);
+      expect(auditBody.data.some((entry: any) => entry.action === "activation_code_create")).toBe(true);
+
+      const usage = await app.request("/api/admin/usage?limit=5", { headers: { authorization: "Bearer test-admin-token" } });
+      expect(usage.status).toBe(200);
+      expect(Array.isArray((await usage.json()).data)).toBe(true);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;

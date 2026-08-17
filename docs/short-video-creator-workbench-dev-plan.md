@@ -49,6 +49,9 @@
 - 新增队列状态接口：`GET /api/v1/batch/queue/status`，后台/前台可查看当前运行任务数、排队任务数和资源上限。
 - 批量任务持久化继续保留，页面离开后可通过本地保存的任务 ID 恢复进度。
 - 新增评论数据导入/查看能力：`POST /api/v1/batch/:id/comments/import`、`GET /api/v1/batch/:id/comments`，评论导出统一走 `type=comments`。
+- 新增界面方案选择页：`GET /designs`，提供 A/B/C/D 四套可视化方向，默认推荐“视频中心 + 创作面板”。
+- 新增后台日志列表接口：`GET /api/admin/usage`、`GET /api/admin/audit-logs`，后台可查看最近接口调用与安全审计记录。
+- 新增 `/favicon.ico` 兼容路由，减少浏览器默认图标 404。
 
 ## 2. 本次确认后的新增需求
 

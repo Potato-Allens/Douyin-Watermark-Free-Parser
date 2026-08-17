@@ -577,6 +577,28 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/admin/usage", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      const requestUrl = new URL(c.req.url);
+      const limit = parsePositiveInt(requestUrl.searchParams.get("limit"), 50);
+      return c.json(success(await (await creatorStorePromise).listUsage(limit)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/admin/audit-logs", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      const requestUrl = new URL(c.req.url);
+      const limit = parsePositiveInt(requestUrl.searchParams.get("limit"), 50);
+      return c.json(success(await (await creatorStorePromise).listAudit(limit)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/admin/plans", async (c) => {
     try {
       requireAdmin(c, adminSessions);
@@ -641,6 +663,13 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/favicon.svg", (c) =>
+    c.body(FAVICON_SVG, 200, {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "cache-control": "public, max-age=86400",
+    }),
+  );
+
+  app.get("/favicon.ico", (c) =>
     c.body(FAVICON_SVG, 200, {
       "content-type": "image/svg+xml; charset=utf-8",
       "cache-control": "public, max-age=86400",

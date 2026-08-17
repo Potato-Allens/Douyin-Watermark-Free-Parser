@@ -52,6 +52,28 @@ export interface AuditLogInput {
   detail?: string | null;
 }
 
+export interface UsageLogEntry {
+  id: number;
+  kind: string;
+  user_key: string;
+  ip: string;
+  path: string;
+  status: number;
+  detail: string | null;
+  created_at: number;
+  created_at_iso: string;
+}
+
+export interface AuditLogEntry {
+  id: number;
+  actor: string;
+  action: string;
+  ip: string;
+  detail: string | null;
+  created_at: number;
+  created_at_iso: string;
+}
+
 export interface CreatorStore {
   getLlmSettings(): Promise<LlmSettings>;
   getRawApiKey(): Promise<string | null>;
@@ -59,6 +81,8 @@ export interface CreatorStore {
   recordUsage(input: UsageLogInput): Promise<void>;
   recordAudit(input: AuditLogInput): Promise<void>;
   getMetrics(): Promise<Record<string, number>>;
+  listUsage(limit?: number): Promise<UsageLogEntry[]>;
+  listAudit(limit?: number): Promise<AuditLogEntry[]>;
 }
 
 const DEFAULT_LLM_SETTINGS: Omit<LlmSettings, "updated_at"> = {
@@ -202,8 +226,10 @@ export async function testLlmSettings(input: LlmSettingsInput, store?: CreatorSt
 class MemoryCreatorStore implements CreatorStore {
   private settings = { ...DEFAULT_LLM_SETTINGS, updated_at: null } as LlmSettings;
   private apiKey: string | null = null;
-  private usage: UsageLogInput[] = [];
-  private audits: AuditLogInput[] = [];
+  private usage: UsageLogEntry[] = [];
+  private audits: AuditLogEntry[] = [];
+  private usageId = 1;
+  private auditId = 1;
 
   async getLlmSettings(): Promise<LlmSettings> {
     return { ...this.settings, api_key_masked: maskKey(this.apiKey) };
@@ -217,10 +243,12 @@ class MemoryCreatorStore implements CreatorStore {
     return this.getLlmSettings();
   }
   async recordUsage(input: UsageLogInput): Promise<void> {
-    this.usage.push(input);
+    const created_at = Date.now();
+    this.usage.push({ ...input, id: this.usageId++, detail: input.detail ?? null, created_at, created_at_iso: new Date(created_at).toISOString() });
   }
   async recordAudit(input: AuditLogInput): Promise<void> {
-    this.audits.push(input);
+    const created_at = Date.now();
+    this.audits.push({ ...input, id: this.auditId++, detail: input.detail ?? null, created_at, created_at_iso: new Date(created_at).toISOString() });
   }
   async getMetrics(): Promise<Record<string, number>> {
     return {
@@ -229,6 +257,12 @@ class MemoryCreatorStore implements CreatorStore {
       ai_calls: this.usage.filter((item) => item.kind.startsWith("ai")).length,
       blocked_calls: this.usage.filter((item) => item.status === 429).length,
     };
+  }
+  async listUsage(limit = 50): Promise<UsageLogEntry[]> {
+    return this.usage.slice(-normalizeListLimit(limit)).reverse();
+  }
+  async listAudit(limit = 50): Promise<AuditLogEntry[]> {
+    return this.audits.slice(-normalizeListLimit(limit)).reverse();
   }
 }
 
@@ -288,6 +322,20 @@ class SqliteCreatorStore implements CreatorStore {
     const ai = this.db.prepare("SELECT COUNT(*) AS count FROM usage_logs WHERE kind LIKE 'ai%'").get() as { count: number };
     const blocked = this.db.prepare("SELECT COUNT(*) AS count FROM usage_logs WHERE status = 429").get() as { count: number };
     return { usage_total: usage.count, audit_total: audits.count, ai_calls: ai.count, blocked_calls: blocked.count };
+  }
+
+  async listUsage(limit = 50): Promise<UsageLogEntry[]> {
+    const rows = this.db
+      .prepare("SELECT id, kind, user_key, ip, path, status, detail, created_at FROM usage_logs ORDER BY id DESC LIMIT ?")
+      .all(normalizeListLimit(limit)) as Array<Omit<UsageLogEntry, "created_at_iso">>;
+    return rows.map((row) => ({ ...row, created_at_iso: new Date(Number(row.created_at)).toISOString() }));
+  }
+
+  async listAudit(limit = 50): Promise<AuditLogEntry[]> {
+    const rows = this.db
+      .prepare("SELECT id, actor, action, ip, detail, created_at FROM audit_logs ORDER BY id DESC LIMIT ?")
+      .all(normalizeListLimit(limit)) as Array<Omit<AuditLogEntry, "created_at_iso">>;
+    return rows.map((row) => ({ ...row, created_at_iso: new Date(Number(row.created_at)).toISOString() }));
   }
 
   private readJson(key: string): Record<string, unknown> {
@@ -428,6 +476,11 @@ function asPositiveNumber(value: unknown, fallback: number): number {
 function asFiniteNumber(value: unknown, fallback: number): number {
   const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizeListLimit(value: unknown): number {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
+  return Number.isFinite(number) ? Math.max(1, Math.min(200, Math.floor(number))) : 50;
 }
 
 function extractHashTags(text: string): string[] {

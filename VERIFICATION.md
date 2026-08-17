@@ -521,3 +521,25 @@ Local verification:
 Functional coverage added:
 - GET /designs renders four selectable UI directions A/B/C/D.
 - Scheme C is highlighted as the recommended video-centered creator panel direction.
+
+## 2026-08-17 22:30 +08:00 - Admin audit list and favicon compatibility
+
+Changed branch: main
+Changed files:
+- src/core/creator.ts
+- src/app.ts
+- src/admin-ui.ts
+- tests/api.test.ts
+- docs/short-video-creator-workbench-dev-plan.md
+
+Local verification:
+- Command: pnpm test
+- Result: exit 0; 2 test files passed; 26 tests passed.
+- Command: pnpm build
+- Result: exit 0; tsx scripts/build-vercel.ts and tsc --noEmit passed.
+
+Functional coverage added:
+- GET /api/admin/usage returns recent interface call records.
+- GET /api/admin/audit-logs returns recent admin/security audit records.
+- Admin page renders recent usage and audit sections.
+- GET /favicon.ico returns the SVG app icon with cache headers.
