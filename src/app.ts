@@ -1380,6 +1380,50 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/admin/dashboard", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      const requestUrl = new URL(c.req.url);
+      const limit = parsePositiveInt(requestUrl.searchParams.get("limit"), 200);
+      const store = await creatorStorePromise;
+      const [metrics, usage, security, rateLimits, queue, recentTasks] = await Promise.all([
+        store.getMetrics(),
+        store.listUsage(limit),
+        store.getSecuritySettings(),
+        getEffectiveRateLimits(),
+        getBatchQueueSnapshot(),
+        listBatchTasks(10),
+      ]);
+      const online = onlineStats();
+      const adaptive = adaptiveBatchResourceLimits();
+      return c.json(
+        success({
+          generated_at: new Date().toISOString(),
+          metrics: { ...metrics, online },
+          online,
+          queue: {
+            ...queue,
+            max_active_tasks: Math.min(queue.max_active_tasks, adaptive.max_active_tasks),
+            max_global_concurrency: Math.min(queue.max_global_concurrency, adaptive.max_global_concurrency),
+            adaptive,
+          },
+          usage_summary: buildUsageSummary(usage),
+          rate_limits: rateLimits,
+          security: {
+            blocked_ip_count: security.blocked_ips.length,
+            allowed_origin_hosts: security.allowed_origin_hosts,
+            require_browser_headers: security.require_browser_headers,
+            block_empty_user_agent: security.block_empty_user_agent,
+            updated_at: security.updated_at,
+          },
+          recent_jobs: recentTasks.map(adminTaskSummary),
+        }),
+      );
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.post("/api/v1/batch/:id/comments/collect", async (c) => {
     const store = await creatorStorePromise;
     try {

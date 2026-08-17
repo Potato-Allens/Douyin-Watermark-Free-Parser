@@ -171,6 +171,7 @@ POST /api/admin/totp/verify
 GET  /api/admin/settings/llm
 POST /api/admin/settings/llm
 POST /api/admin/settings/llm/test
+GET  /api/admin/dashboard
 GET  /api/admin/metrics
 GET  /api/admin/usage/summary
 GET  /api/admin/usage
@@ -193,7 +194,7 @@ GET  /api/admin/codes
 POST /api/admin/codes
 ```
 
-Admin login supports username/password plus Google Authenticator/TOTP. `/api/admin/totp/setup` returns a Base32 secret and `otpauth_uri`; `/api/admin/totp/verify` enables or disables the stored TOTP after code verification. Failed login attempts are locked by IP + username. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
+Admin login supports username/password plus Google Authenticator/TOTP. `/api/admin/totp/setup` returns a Base32 secret and `otpauth_uri`; `/api/admin/totp/verify` enables or disables the stored TOTP after code verification. Failed login attempts are locked by IP + username. `/api/admin/dashboard` aggregates online count, adaptive queue capacity, usage summary, rate limits, security policy summary, and recent jobs for the admin overview. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
 
 ## Environment Variables
 

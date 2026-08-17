@@ -118,6 +118,7 @@ describe("api routes", () => {
     expect(html).toContain("/api/admin/rate-limits");
     expect(html).toContain("/api/admin/totp/setup");
     expect(html).toContain('id="totpSecret"');
+    expect(html).toContain("/api/admin/dashboard");
     expect(html).toContain("/api/admin/usage/summary");
     expect(html).toContain("/api/admin/security");
     expect(html).toContain("/api/admin/jobs");
@@ -132,6 +133,8 @@ describe("api routes", () => {
     expect(html).toContain('id="llmTimeout"');
     expect(html).toContain('id="llmMaxTokens"');
     expect(html).toContain('id="llmTemperature"');
+    expect(html).toContain('id="mQueue"');
+    expect(html).toContain('id="mCapacity"');
     expect(html).not.toContain("???");
   });
 
@@ -473,6 +476,16 @@ describe("api routes", () => {
       expect(summaryBody.data.by_kind.some((entry: any) => entry.kind === "parse" && entry.total >= 2 && entry.success >= 1)).toBe(true);
       expect(summaryBody.data.by_kind.some((entry: any) => entry.kind === "rate_limited_parse" && entry.blocked >= 1)).toBe(true);
       expect(summaryBody.data.top_ips[0].total).toBeGreaterThan(0);
+
+      const dashboard = await app.request("/api/admin/dashboard?limit=20", { headers: { authorization: "Bearer usage-admin-token" } });
+      const dashboardBody = await dashboard.json();
+      expect(dashboard.status).toBe(200);
+      expect(dashboardBody.data.metrics.usage_total).toBeGreaterThanOrEqual(2);
+      expect(dashboardBody.data.online.online_count).toBeGreaterThanOrEqual(0);
+      expect(dashboardBody.data.queue.adaptive.max_active_tasks).toBeGreaterThanOrEqual(1);
+      expect(dashboardBody.data.usage_summary.by_kind.some((entry: any) => entry.kind === "parse")).toBe(true);
+      expect(dashboardBody.data.rate_limits.parse_per_minute).toBe(1);
+      expect(dashboardBody.data.security.blocked_ip_count).toBe(0);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;
