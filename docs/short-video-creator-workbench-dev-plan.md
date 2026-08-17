@@ -49,13 +49,15 @@
 - 新增队列状态接口：`GET /api/v1/batch/queue/status`，后台/前台可查看当前运行任务数、排队任务数和资源上限。
 - 批量任务持久化继续保留，页面离开后可通过本地保存的任务 ID 恢复进度。
 - 新增评论数据导入/查看能力：`POST /api/v1/batch/:id/comments/import`、`GET /api/v1/batch/:id/comments`，评论导出统一走 `type=comments`。
-- 新增界面方案选择页：`GET /designs`，提供 A/B/C/D 四套可视化方向，默认推荐“视频中心 + 创作面板”。
+- 新增界面方案选择页：`GET /designs`，提供 A/B/C/D 四套可视化方向；已按用户选择采用“方案 A：抖音沉浸预览版”。
 - 新增后台日志列表接口：`GET /api/admin/usage`、`GET /api/admin/audit-logs`，后台可查看最近接口调用与安全审计记录。
 - 新增 `/favicon.ico` 兼容路由，减少浏览器默认图标 404。
 - 后台登录失败锁定已落地：默认同 IP + 用户名 15 分钟内失败 5 次后锁定 15 分钟，并写入 `admin_login_failed` / `admin_login_locked` 审计日志；可通过 `ADMIN_LOGIN_MAX_FAILURES`、`ADMIN_LOGIN_WINDOW_MINUTES`、`ADMIN_LOGIN_LOCK_MINUTES` 调整。
 - 后台限流配置已落地：`GET/POST /api/admin/rate-limits` 支持配置单条解析、媒体代理、批量任务、AI 调用和评论采集额度，并写入 `rate_limits_save` 审计日志；后台页面已加入“接口限流”配置卡片。
 - 后台安全策略已落地：`GET/POST /api/admin/security`、`POST /api/admin/block-ip` 支持 IP 黑名单、Origin/Referer 白名单、浏览器来源头检查和空 User-Agent 拦截，命中后写入 `security_blocked_request` 审计日志。
 - 后台运营管理已落地：`GET /api/admin/jobs`、`POST /api/admin/jobs/:id/retry`、`POST /api/admin/jobs/:id/cancel` 可查看、重试、取消批量任务；`GET /api/admin/users`、`POST /api/admin/users/:id/plan`、`POST /api/admin/users/:id/disable` 可查看会员、调整套餐和禁用账号。
+- 会员批量任务隔离已落地：`GET /api/v1/batch/tasks` 只返回当前会员自己的批量任务；任务状态、AI、导出、评论查看/导入/采集都会校验任务归属，避免跨会员查看或操作。
+- 批量封面下载已落地：`GET /api/v1/batch/:id/export?type=covers_zip` 会打包封面文件和 `cover-manifest.json`，前台“导出封面”按钮直接下载 ZIP。
 
 ## 2. 本次确认后的新增需求
 
@@ -717,23 +719,26 @@ Tab 5：会员
 - 限流生效，异常调用有审计记录。
 - 后台可查看接口调用次数和 AI 调用次数。
 
-## 18. 需要最终选择的事项
+## 18. 已确认和默认事项
 
-1. 工作台视觉方案：A / B / C / D。
-2. 默认会员套餐名称和价格是否需要展示。
-3. 小米大模型具体模型名。
-4. 评论区默认采集数量，例如每条视频 20 条 / 50 条 / 100 条。
-5. 批量导出格式优先做 JSON，还是同时做 CSV/TXT。
+1. 工作台视觉方案：已确认 **方案 A：抖音沉浸预览版**。
+2. 会员套餐：默认 4 档 `trial / standard / pro / enterprise`，后台可改名称、额度、并发和优先级。
+3. 小米大模型：默认 Base URL 为 `https://token-plan-cn.xiaomimimo.com/v1`，模型名和 Key 由后台填写并测试连接。
+4. 评论区默认采集：单条默认 20 条，接口支持传入 `count` 或 `count_per_video`，单次上限 100 条。
+5. 批量导出：已支持 JSON、口播文案 TXT、封面链接 JSON、封面 ZIP、评论 JSON；后续如需要表格化运营，可继续增加 CSV/XLSX。
 
-如果未选择，默认按：方案 C、4 档会员、每条评论 50 条、JSON + CSV + TXT 实施。
+## 19. 当前批量导出接口
 
+```text
+GET /api/v1/batch/:id/export?type=json
+GET /api/v1/batch/:id/export?type=scripts
+GET /api/v1/batch/:id/export?type=covers
+GET /api/v1/batch/:id/export?type=covers_zip
+GET /api/v1/batch/:id/export?type=comments
+```
 
-### 13.4 ??????? AI ?????
-
-- ??????????????`.data/batch-tasks.json`?
-- ????????????????????AI ????????
-- ???? AI ?????`POST /api/v1/batch/:id/ai`?
-- ?????????`GET /api/v1/batch/:id/export?type=json|scripts|covers|covers_zip|comments`?
-- ??????????????????? JSON????????????????
-- ?? AI ?????? `batch_ai_limit` ? `ai_daily_quota` ?????????????????
-- ????????????????????????????
+- `json`：完整批量任务数据，包含视频、封面、标题、介绍、统计、AI 文案、评论。
+- `scripts`：批量口播文案 TXT。
+- `covers`：封面链接 JSON。
+- `covers_zip`：封面文件 ZIP + `cover-manifest.json`。
+- `comments`：评论内容 JSON。

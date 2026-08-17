@@ -24,6 +24,7 @@ describe("api routes", () => {
     expect(html).toContain('id="collectBatchCommentsBtn"');
     expect(html).toContain('id="collectMini"');
     expect(html).toContain('downloadExport("covers_zip")');
+    expect(html).toContain("/api/v1/batch/tasks?limit=12");
     expect(html).toContain('profilePreviewBtn:$("inspectBtn")');
     expect(html).not.toContain('profilePreviewBtn:$("profilePreviewBtn")');
 
@@ -719,6 +720,58 @@ describe("api routes", () => {
     const commentsBody = await comments.json();
     expect(comments.status).toBe(200);
     expect(commentsBody.data.items[0].comments[0].text).toBe("nice video");
+  });
+
+  it("isolates member batch tasks and exposes own task history", async () => {
+    const store = await createMemoryVipStore(["OWNER-A-1", "OWNER-B-1"]);
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/aweme/v1/web/aweme/post/")) {
+        return new Response(JSON.stringify({ total: 1, aweme_list: [{ aweme_id: "7673000000000000001" }] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/user/")) {
+        return new Response(`<html>{"sec_uid":"SEC_OWNER","aweme_id":"7673000000000000001"}</html>`, {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response(VIDEO_HTML, { headers: { "content-type": "text/html" } });
+    };
+    const app = createApp({ fetcher, vipStore: store, cacheTtlMs: 0 });
+    const registerA = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ code: "OWNER-A-1", username: "owner_a_user", password: "password123" }),
+    });
+    const registerB = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ code: "OWNER-B-1", username: "owner_b_user", password: "password123" }),
+    });
+    const headersA = { authorization: `Bearer ${(await registerA.json()).data.token}` };
+    const headersB = { authorization: `Bearer ${(await registerB.json()).data.token}` };
+
+    const started = await app.request("/api/v1/batch/start", {
+      method: "POST",
+      headers: headersA,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_OWNER", count: 1, concurrency: 1 }),
+    });
+    const taskId = (await started.json()).data.id;
+
+    const ownList = await app.request("/api/v1/batch/tasks", { headers: headersA });
+    const ownListBody = await ownList.json();
+    expect(ownList.status).toBe(200);
+    expect(ownListBody.data.some((task: any) => task.id === taskId)).toBe(true);
+
+    const otherList = await app.request("/api/v1/batch/tasks", { headers: headersB });
+    const otherListBody = await otherList.json();
+    expect(otherList.status).toBe(200);
+    expect(otherListBody.data.some((task: any) => task.id === taskId)).toBe(false);
+
+    const otherStatus = await app.request(`/api/v1/batch/${taskId}`, { headers: headersB });
+    expect(otherStatus.status).toBe(403);
+
+    const ownStatus = await app.request(`/api/v1/batch/${taskId}`, { headers: headersA });
+    expect(ownStatus.status).toBe(200);
   });
 
   it("previews profile works and returns queue status for member plans", async () => {

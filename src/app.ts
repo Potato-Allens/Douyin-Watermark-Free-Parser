@@ -488,12 +488,29 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/v1/batch/tasks", async (c) => {
+    try {
+      await guardPublicAccess(c, "batch_tasks");
+      const session = await requireVip(c, await getStore());
+      const requestUrl = new URL(c.req.url);
+      const limit = parsePositiveInt(requestUrl.searchParams.get("limit"), 20);
+      const tasks = (await listBatchTasks(Math.max(limit * 20, 500)))
+        .filter((task) => canAccessBatchTask(task, session))
+        .slice(0, limit)
+        .map(userTaskSummary);
+      return c.json(success(tasks));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/v1/batch/:id", async (c) => {
     try {
       await guardPublicAccess(c, "batch_status");
-      await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore());
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
       return c.json(success(task));
     } catch (error) {
       return jsonError(c, error);
@@ -517,6 +534,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const session = await requireVip(c, await getStore());
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
       const body = await readJsonBody(c);
       const prompt = asString(body.prompt);
       const mode = asString(body.mode) ?? "batch_script";
@@ -550,6 +568,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const session = await requireVip(c, await getStore());
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
       const requestUrl = new URL(c.req.url);
       const type = requestUrl.searchParams.get("type") ?? "json";
       if (type === "comments" && isMemberSession(session) && !session.plan.comment_export) {
@@ -575,6 +594,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const awemeId = requestUrl.searchParams.get("aweme_id");
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
       const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
       return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })) }));
     } catch (error) {
@@ -591,6 +611,7 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
       const body = await readJsonBody(c);
       const payloads = normalizeCommentImportPayload(body);
       let imported = 0;
@@ -649,6 +670,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (taskId) {
         const task = await getBatchTask(taskId);
         if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+        assertBatchTaskAccess(task, session);
         const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
         return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })) }));
       }
@@ -844,6 +866,7 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
       const body = await readJsonBody(c);
       const countPerVideo = Math.min(parsePositiveInt(body.count_per_video ?? body.count, 20), 100);
       const requestedIds = readAwemeIdSet(body.aweme_ids);
@@ -1191,6 +1214,39 @@ function profilePreviewItem(awemeId: string, parsed: ParsedDouyinInfo) {
     music_title: parsed.music.title,
     stats: { ...parsed.stats },
     error: null,
+  };
+}
+
+function canAccessBatchTask(task: BatchTask, session: VipSession | MemberSession): boolean {
+  return !task.owner_key || task.owner_key === session.code;
+}
+
+function assertBatchTaskAccess(task: BatchTask, session: VipSession | MemberSession): void {
+  if (!canAccessBatchTask(task, session)) {
+    throw new DouyinServiceError("UNSUPPORTED_CONTENT", "batch task belongs to another member", 403);
+  }
+}
+
+function userTaskSummary(task: BatchTask) {
+  return {
+    id: task.id,
+    homepage_url: task.homepage_url,
+    requested_count: task.requested_count,
+    concurrency: task.concurrency,
+    queue_priority: task.queue_priority,
+    queue_position: task.queue_position,
+    total_detected: task.total_detected,
+    status: task.status,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    started_at: task.started_at,
+    finished_at: task.finished_at,
+    completed_count: task.completed_count,
+    success_count: task.success_count,
+    failed_count: task.failed_count,
+    progress_percent: task.requested_count ? Math.round((task.completed_count / task.requested_count) * 100) : 0,
+    first_cover_url: task.items.find((item) => item.cover_url)?.cover_url ?? null,
+    first_title: task.items.find((item) => item.title)?.title ?? null,
   };
 }
 
