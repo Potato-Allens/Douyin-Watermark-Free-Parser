@@ -161,10 +161,32 @@ Exit code: 0
 
 ## 未完成的服务器上线条件
 
-本地代码和仓库更新已完成；部署到 `dy.devforai.cn` 还需要服务器 SSH 信息：
+服务器已通过宝塔终端完成上线：
 
-- 服务器 IP
-- SSH 用户名
-- SSH 端口
+- 服务器：`47.97.126.85`
+- 域名：`http://dy.devforai.cn`
+- 应用目录：`/www/wwwroot/dy.devforai.cn`
+- systemd 服务：`douyin-parser`
+- 运行端口：`127.0.0.1:8000`
+- Nginx 配置：`/www/server/panel/vhost/nginx/dy.devforai.cn.conf`
+- 部署日志：`/root/douyin-parser-deploy.log`
 
-本机 Docker Desktop 当前 daemon 未启动，因此本机 `pnpm verify:docker` 停在 Docker API 连接阶段；代码侧 Dockerfile 已更新，服务器 Docker 环境可直接按 `DEPLOYMENT.md` 执行。
+线上验证：
+
+```powershell
+Invoke-WebRequest -UseBasicParsing -Uri "http://dy.devforai.cn/healthz"
+Invoke-WebRequest -UseBasicParsing -Uri "http://dy.devforai.cn/"
+Invoke-WebRequest -UseBasicParsing -Uri "http://dy.devforai.cn/api/v1/parse?url=https%3A%2F%2Fv.douyin.com%2FjC_sgt3I3PQ%2F"
+curl.exe -I -r 0-1023 "<download.video_proxy_url>"
+```
+
+结果：
+
+```text
+healthz: 200 {"ok":true,"code":"OK","message":"healthy"}
+home page: 200, contains "抖音视频解析"
+parse: 200, ok=true, aweme_id=6914948781100338440, media.type=video
+media proxy: 206 Partial Content, Content-Type=video/mp4, Content-Range=bytes 0-1023/844227
+```
+
+本机 Docker Desktop 当前 daemon 未启动，因此本机 `pnpm verify:docker` 停在 Docker API 连接阶段；线上使用服务器已有 Node.js 22 + pnpm + 宝塔 Nginx 方式运行。
