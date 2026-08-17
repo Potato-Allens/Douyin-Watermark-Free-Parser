@@ -24,6 +24,9 @@ describe("api routes", () => {
     expect(html).toContain('id="collectBatchCommentsBtn"');
     expect(html).toContain('id="collectMini"');
     expect(html).toContain('downloadExport("covers_zip")');
+    expect(html).toContain('downloadExport("items_csv")');
+    expect(html).toContain('downloadExport("scripts_csv")');
+    expect(html).toContain('downloadExport("comments_csv")');
     expect(html).toContain("/api/v1/batch/tasks?limit=12");
     expect(html).toContain('profilePreviewBtn:$("inspectBtn")');
     expect(html).not.toContain('profilePreviewBtn:$("profilePreviewBtn")');
@@ -700,6 +703,18 @@ describe("api routes", () => {
     expect(scripts.headers.get("content-type")).toContain("text/plain");
     expect(scriptText).toContain("aweme_id: 7673000000000000001");
 
+    const itemsCsv = await app.request(`/api/v1/batch/${taskId}/export?type=items_csv`, { headers });
+    const itemsCsvText = await itemsCsv.text();
+    expect(itemsCsv.headers.get("content-type")).toContain("text/csv");
+    expect(itemsCsvText).toContain("aweme_id,status,title");
+    expect(itemsCsvText).toContain("7673000000000000001");
+
+    const scriptsCsv = await app.request(`/api/v1/batch/${taskId}/export?type=scripts_csv`, { headers });
+    const scriptsCsvText = await scriptsCsv.text();
+    expect(scriptsCsv.headers.get("content-type")).toContain("text/csv");
+    expect(scriptsCsvText).toContain("rewritten_script");
+    expect(scriptsCsvText).toContain("7673000000000000001");
+
     const coverZip = await app.request(`/api/v1/batch/${taskId}/export?type=covers_zip`, { headers });
     const coverZipBytes = new Uint8Array(await coverZip.arrayBuffer());
     expect(coverZip.status).toBe(200);
@@ -720,6 +735,12 @@ describe("api routes", () => {
     const commentsBody = await comments.json();
     expect(comments.status).toBe(200);
     expect(commentsBody.data.items[0].comments[0].text).toBe("nice video");
+
+    const commentsCsv = await app.request(`/api/v1/batch/${taskId}/export?type=comments_csv`, { headers });
+    const commentsCsvText = await commentsCsv.text();
+    expect(commentsCsv.headers.get("content-type")).toContain("text/csv");
+    expect(commentsCsvText).toContain("comment_id,nickname,text");
+    expect(commentsCsvText).toContain("nice video");
   });
 
   it("isolates member batch tasks and exposes own task history", async () => {

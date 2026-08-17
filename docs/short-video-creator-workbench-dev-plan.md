@@ -58,6 +58,7 @@
 - 后台运营管理已落地：`GET /api/admin/jobs`、`POST /api/admin/jobs/:id/retry`、`POST /api/admin/jobs/:id/cancel` 可查看、重试、取消批量任务；`GET /api/admin/users`、`POST /api/admin/users/:id/plan`、`POST /api/admin/users/:id/disable` 可查看会员、调整套餐和禁用账号。
 - 会员批量任务隔离已落地：`GET /api/v1/batch/tasks` 只返回当前会员自己的批量任务；任务状态、AI、导出、评论查看/导入/采集都会校验任务归属，避免跨会员查看或操作。
 - 批量封面下载已落地：`GET /api/v1/batch/:id/export?type=covers_zip` 会打包封面文件和 `cover-manifest.json`，前台“导出封面”按钮直接下载 ZIP。
+- 批量 CSV 导出已落地：`items_csv` 导出作品表格，`scripts_csv` 导出口播文案表格，`comments_csv` 导出评论表格，便于运营二次处理。
 
 ## 2. 本次确认后的新增需求
 
@@ -725,20 +726,26 @@ Tab 5：会员
 2. 会员套餐：默认 4 档 `trial / standard / pro / enterprise`，后台可改名称、额度、并发和优先级。
 3. 小米大模型：默认 Base URL 为 `https://token-plan-cn.xiaomimimo.com/v1`，模型名和 Key 由后台填写并测试连接。
 4. 评论区默认采集：单条默认 20 条，接口支持传入 `count` 或 `count_per_video`，单次上限 100 条。
-5. 批量导出：已支持 JSON、口播文案 TXT、封面链接 JSON、封面 ZIP、评论 JSON；后续如需要表格化运营，可继续增加 CSV/XLSX。
+5. 批量导出：已支持 JSON、作品 CSV、口播文案 TXT/CSV、封面链接 JSON、封面 ZIP、评论 JSON/CSV；后续如需要表格化运营，可继续增加 XLSX。
 
 ## 19. 当前批量导出接口
 
 ```text
 GET /api/v1/batch/:id/export?type=json
+GET /api/v1/batch/:id/export?type=items_csv
 GET /api/v1/batch/:id/export?type=scripts
+GET /api/v1/batch/:id/export?type=scripts_csv
 GET /api/v1/batch/:id/export?type=covers
 GET /api/v1/batch/:id/export?type=covers_zip
 GET /api/v1/batch/:id/export?type=comments
+GET /api/v1/batch/:id/export?type=comments_csv
 ```
 
 - `json`：完整批量任务数据，包含视频、封面、标题、介绍、统计、AI 文案、评论。
+- `items_csv`：作品 CSV 表格，包含视频、封面、标题、作者、音乐、互动数据、AI 文案摘要。
 - `scripts`：批量口播文案 TXT。
+- `scripts_csv`：口播文案 CSV 表格。
 - `covers`：封面链接 JSON。
 - `covers_zip`：封面文件 ZIP + `cover-manifest.json`。
 - `comments`：评论内容 JSON。
+- `comments_csv`：评论内容 CSV 表格。

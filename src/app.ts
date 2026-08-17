@@ -571,7 +571,7 @@ export function createApp(options: CreateAppOptions = {}) {
       assertBatchTaskAccess(task, session);
       const requestUrl = new URL(c.req.url);
       const type = requestUrl.searchParams.get("type") ?? "json";
-      if (type === "comments" && isMemberSession(session) && !session.plan.comment_export) {
+      if ((type === "comments" || type === "comments_csv") && isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
       }
       if ((type === "covers" || type === "covers_zip") && isMemberSession(session) && !session.plan.cover_batch_download) {
@@ -1357,6 +1357,74 @@ async function batchExportResponse(task: BatchTask, type: string, fetcher?: Fetc
       },
     });
   }
+  if (type === "items_csv") {
+    return csvAttachment(
+      [
+        [
+          "aweme_id",
+          "status",
+          "title",
+          "author_nickname",
+          "cover_url",
+          "video_url",
+          "download_url",
+          "music_title",
+          "music_author",
+          "digg_count",
+          "comment_count",
+          "share_count",
+          "collect_count",
+          "ai_title",
+          "ai_script",
+          "ai_description",
+          "ai_tags",
+          "error",
+        ],
+        ...task.items.map((item) => [
+          item.aweme_id,
+          item.status,
+          item.title,
+          item.author_nickname,
+          item.cover_url,
+          item.video_url,
+          item.download_url,
+          item.music_title,
+          item.music_author,
+          item.stats.digg_count,
+          item.stats.comment_count,
+          item.stats.share_count,
+          item.stats.collect_count,
+          item.ai_copy?.title ?? null,
+          item.ai_copy?.rewritten_script ?? null,
+          item.ai_copy?.description ?? null,
+          item.ai_copy?.tags.join(" ") ?? null,
+          item.error,
+        ]),
+      ],
+      `batch-${task.id}-items-${timestamp}.csv`,
+    );
+  }
+  if (type === "scripts_csv") {
+    return csvAttachment(
+      [
+        ["aweme_id", "source_title", "ai_title", "transcript", "rewritten_script", "description", "tags", "provider", "prompt"],
+        ...task.items
+          .filter((item) => item.ai_copy)
+          .map((item) => [
+            item.aweme_id,
+            item.title,
+            item.ai_copy?.title ?? null,
+            item.ai_copy?.transcript ?? null,
+            item.ai_copy?.rewritten_script ?? null,
+            item.ai_copy?.description ?? null,
+            item.ai_copy?.tags.join(" ") ?? null,
+            item.ai_copy?.provider ?? null,
+            item.ai_copy?.prompt ?? null,
+          ]),
+      ],
+      `batch-${task.id}-scripts-${timestamp}.csv`,
+    );
+  }
   if (type === "covers") {
     return jsonAttachment(
       {
@@ -1380,6 +1448,20 @@ async function batchExportResponse(task: BatchTask, type: string, fetcher?: Fetc
       },
       `batch-${task.id}-comments-${timestamp}.json`,
     );
+  }
+  if (type === "comments_csv") {
+    const rows = task.items.flatMap((item) =>
+      item.comments.map((comment) => [
+        item.aweme_id,
+        item.title,
+        comment.cid,
+        comment.nickname,
+        comment.text,
+        comment.digg_count,
+        comment.create_time,
+      ]),
+    );
+    return csvAttachment([["aweme_id", "video_title", "comment_id", "nickname", "text", "digg_count", "create_time"], ...rows], `batch-${task.id}-comments-${timestamp}.csv`);
   }
   return jsonAttachment(
     {
@@ -1408,6 +1490,21 @@ async function batchExportResponse(task: BatchTask, type: string, fetcher?: Fetc
     },
     `batch-${task.id}-full-${timestamp}.json`,
   );
+}
+
+function csvAttachment(rows: Array<Array<string | number | null | undefined>>, filename: string): Response {
+  const csv = `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
+  return new Response(csv, {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename}"`,
+    },
+  });
+}
+
+function csvCell(value: string | number | null | undefined): string {
+  const text = value === null || value === undefined ? "" : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 function jsonAttachment(value: unknown, filename: string): Response {
