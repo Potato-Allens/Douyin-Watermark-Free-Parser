@@ -65,6 +65,7 @@
 - 方案 A 已确认继续推进；后台小米/OpenAI-compatible 大模型配置补齐高级参数：请求超时、最大 token、temperature，便于控制速度、成本和文案发散度。
 - Cookie 会话 CSRF 防护已落地：会员登录/注册和后台登录都会下发 `csrf_token` 与同名 CSRF Cookie，使用 Cookie 鉴权的写操作必须携带 `X-CSRF-Token`，降低跨站盗用后台和会员批量能力的风险。
 - 后台接口调用汇总已落地：`GET /api/admin/usage/summary` 按接口类型、状态码、用户、IP 汇总最近调用，后台首页直接显示成功、错误、限流拦截和高频来源。
+- 批量后处理队列已落地：批量 AI 口播文案和批量评论采集支持 `async: true` 加入队列，进度写入批量任务 `post_jobs`，离开页面后回来仍能看到完成进度；并发由 `POST_JOB_MAX_ACTIVE` 控制。
 
 ## 2. 本次确认后的新增需求
 
@@ -759,3 +760,16 @@ GET /api/v1/batch/:id/export?type=comments_csv
 - `covers_zip`：封面文件 ZIP + `cover-manifest.json`。
 - `comments`：评论内容 JSON。
 - `comments_csv`：评论内容 CSV 表格。
+
+## 20. 当前批量后处理队列接口
+
+```text
+POST /api/v1/batch/:id/ai                 // body 支持 { "async": true }
+POST /api/v1/batch/:id/comments/collect   // body 支持 { "async": true }
+GET  /api/v1/batch/:id/jobs
+```
+
+- `post_jobs` 会随 `GET /api/v1/batch/:id` 返回。
+- `ai` 类型表示批量口播文案生成队列。
+- `comments` 类型表示批量评论采集队列。
+- 队列字段包含 `status`、`queue_position`、`requested_count`、`completed_count`、`success_count`、`failed_count`。

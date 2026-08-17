@@ -736,6 +736,17 @@ describe("api routes", () => {
           headers: { "content-type": "application/json" },
         });
       }
+      if (url.includes("/aweme/v1/web/comment/list/")) {
+        return new Response(
+          JSON.stringify({
+            status_code: 0,
+            total: 1,
+            has_more: 0,
+            comments: [{ cid: "c-async", text: "async queued comment", user: { nickname: "queued_viewer" }, digg_count: 3, create_time: 1710000100 }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
       if (url.includes("/user/")) {
         return new Response(`<html>{"sec_uid":"SEC_COMMENT","aweme_id":"7673000000000000001"}</html>`, {
           headers: { "content-type": "text/html" },
@@ -847,6 +858,17 @@ describe("api routes", () => {
           headers: { "content-type": "application/json" },
         });
       }
+      if (url.includes("/aweme/v1/web/comment/list/")) {
+        return new Response(
+          JSON.stringify({
+            status_code: 0,
+            total: 1,
+            has_more: 0,
+            comments: [{ cid: "c-async", text: "async queued comment", user: { nickname: "queued_viewer" }, digg_count: 3, create_time: 1710000100 }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
       if (url.includes("/user/")) {
         return new Response(`<html>{"sec_uid":"SEC_TEST","aweme_id":"7673000000000000001"}</html>`, {
           headers: { "content-type": "text/html" },
@@ -936,6 +958,41 @@ describe("api routes", () => {
     expect(commentsCsv.headers.get("content-type")).toContain("text/csv");
     expect(commentsCsvText).toContain("comment_id,nickname,text");
     expect(commentsCsvText).toContain("nice video");
+
+    const asyncAi = await app.request(`/api/v1/batch/${taskId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ prompt: "队列化", count: 1, async: true }),
+    });
+    const asyncAiBody = await asyncAi.json();
+    expect(asyncAi.status).toBe(202);
+    expect(asyncAiBody.data.job.type).toBe("ai");
+    expect(asyncAiBody.data.job.requested_count).toBe(1);
+
+    const asyncComments = await app.request(`/api/v1/batch/${taskId}/comments/collect`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ count_per_video: 1, video_count: 1, async: true }),
+    });
+    const asyncCommentsBody = await asyncComments.json();
+    expect(asyncComments.status).toBe(202);
+    expect(asyncCommentsBody.data.job.type).toBe("comments");
+
+    let postJobTask: any = null;
+    for (let index = 0; index < 30; index += 1) {
+      const task = await app.request(`/api/v1/batch/${taskId}`, { headers });
+      postJobTask = await task.json();
+      if (postJobTask.data.post_jobs.length >= 2 && postJobTask.data.post_jobs.every((job: any) => job.status === "completed")) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(postJobTask.data.post_jobs.some((job: any) => job.type === "ai" && job.completed_count === 1)).toBe(true);
+    expect(postJobTask.data.post_jobs.some((job: any) => job.type === "comments" && job.completed_count === 1)).toBe(true);
+    expect(postJobTask.data.items[0].comments.some((comment: any) => comment.text === "async queued comment")).toBe(true);
+
+    const jobs = await app.request(`/api/v1/batch/${taskId}/jobs`, { headers });
+    const jobsBody = await jobs.json();
+    expect(jobs.status).toBe(200);
+    expect(jobsBody.data.jobs.length).toBeGreaterThanOrEqual(2);
   });
 
   it("isolates member batch tasks and exposes own task history", async () => {
@@ -946,6 +1003,17 @@ describe("api routes", () => {
         return new Response(JSON.stringify({ total: 1, aweme_list: [{ aweme_id: "7673000000000000001" }] }), {
           headers: { "content-type": "application/json" },
         });
+      }
+      if (url.includes("/aweme/v1/web/comment/list/")) {
+        return new Response(
+          JSON.stringify({
+            status_code: 0,
+            total: 1,
+            has_more: 0,
+            comments: [{ cid: "c-async", text: "async queued comment", user: { nickname: "queued_viewer" }, digg_count: 3, create_time: 1710000100 }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
       }
       if (url.includes("/user/")) {
         return new Response(`<html>{"sec_uid":"SEC_OWNER","aweme_id":"7673000000000000001"}</html>`, {

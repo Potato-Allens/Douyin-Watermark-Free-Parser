@@ -5,6 +5,8 @@ import type { AiCopyResult } from "./creator.ts";
 
 export type BatchItemStatus = "pending" | "running" | "success" | "failed";
 export type BatchTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type BatchPostJobType = "ai" | "comments";
+export type BatchPostJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface BatchItem {
   aweme_id: string;
@@ -35,6 +37,24 @@ export interface BatchComment {
   create_time: string | null;
 }
 
+export interface BatchPostJob {
+  id: string;
+  type: BatchPostJobType;
+  status: BatchPostJobStatus;
+  queue_priority: number;
+  queue_position: number;
+  requested_count: number;
+  completed_count: number;
+  success_count: number;
+  failed_count: number;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  detail: Record<string, unknown>;
+}
+
 export interface BatchTask {
   id: string;
   homepage_url: string;
@@ -53,6 +73,7 @@ export interface BatchTask {
   success_count: number;
   failed_count: number;
   items: BatchItem[];
+  post_jobs: BatchPostJob[];
 }
 
 export interface BatchStartOptions {
@@ -126,6 +147,7 @@ export async function startBatchTask(options: BatchStartOptions): Promise<BatchT
     success_count: 0,
     failed_count: 0,
     items: selected.map(createEmptyBatchItem),
+    post_jobs: [],
   };
   tasks.set(task.id, task);
   executions.set(task.id, options);
@@ -404,6 +426,34 @@ function normalizeTask(value: unknown): BatchTask | null {
     success_count: successCount,
     failed_count: failedCount,
     items: items as BatchItem[],
+    post_jobs: Array.isArray(record.post_jobs) ? record.post_jobs.map(normalizePostJob).filter(isPresent) : [],
+  };
+}
+
+function normalizePostJob(value: unknown): BatchPostJob | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, any>;
+  const id = typeof record.id === "string" ? record.id : "";
+  if (!id) return null;
+  const type = record.type === "ai" || record.type === "comments" ? record.type : "ai";
+  let status = (record.status === "queued" || record.status === "running" || record.status === "completed" || record.status === "failed" || record.status === "cancelled" ? record.status : "failed") as BatchPostJobStatus;
+  if (status === "queued" || status === "running") status = "failed";
+  return {
+    id,
+    type,
+    status,
+    queue_priority: nullableNumber(record.queue_priority) ?? 0,
+    queue_position: 0,
+    requested_count: nullableNumber(record.requested_count) ?? 0,
+    completed_count: nullableNumber(record.completed_count) ?? 0,
+    success_count: nullableNumber(record.success_count) ?? 0,
+    failed_count: nullableNumber(record.failed_count) ?? 0,
+    created_at: typeof record.created_at === "string" ? record.created_at : new Date().toISOString(),
+    updated_at: typeof record.updated_at === "string" ? record.updated_at : new Date().toISOString(),
+    started_at: nullableString(record.started_at),
+    finished_at: nullableString(record.finished_at) ?? (status === "completed" || status === "failed" || status === "cancelled" ? (typeof record.updated_at === "string" ? record.updated_at : new Date().toISOString()) : null),
+    error: nullableString(record.error) ?? (status === "failed" ? "server restarted before post job completed" : null),
+    detail: record.detail && typeof record.detail === "object" && !Array.isArray(record.detail) ? (record.detail as Record<string, unknown>) : {},
   };
 }
 

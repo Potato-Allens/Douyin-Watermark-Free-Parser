@@ -12,6 +12,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Real online count only; default `ONLINE_BASE_COUNT=0`.
 - Member activation-code registration, account/password login, plan permissions, queue priority, and batch privileges.
 - Profile works preview, member-isolated batch task history, persistent queue progress, and JSON/CSV/text/cover ZIP/comment export.
+- Async batch post-processing queue for batch AI copywriting and batch comments collection; progress is persisted in each batch task.
 - Single and batch comments collection/import/export.
 - Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
 - Admin console `/admin` with password + optional Google Authenticator/TOTP, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
@@ -130,6 +131,7 @@ POST /api/v1/batch/start
 GET  /api/v1/batch/tasks
 GET  /api/v1/batch/queue/status
 GET  /api/v1/batch/:id
+GET  /api/v1/batch/:id/jobs
 POST /api/v1/batch/:id/ai
 GET  /api/v1/batch/:id/export?type=json|items_csv|scripts|scripts_csv|covers|covers_zip|comments|comments_csv
 GET  /api/v1/comments?aweme_id=<id>&count=20
@@ -137,6 +139,8 @@ GET  /api/v1/batch/:id/comments
 POST /api/v1/batch/:id/comments/import
 POST /api/v1/batch/:id/comments/collect
 ```
+
+For batch AI and comments collection, pass `"async": true` to queue the operation and poll `GET /api/v1/batch/:id` or `GET /api/v1/batch/:id/jobs` for `post_jobs` progress.
 
 Registration example:
 
@@ -199,6 +203,7 @@ Admin login supports username/password plus optional Google Authenticator/TOTP. 
 | `BATCH_RATE_LIMIT_PER_HOUR` | `30` | Batch task creation/inspection limit |
 | `AI_RATE_LIMIT_PER_DAY` | `1000` | Global AI call ceiling per user |
 | `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comments collection ceiling per user |
+| `POST_JOB_MAX_ACTIVE` | `2` | Max concurrent async batch AI/comment post-processing jobs |
 
 ## Deployment
 

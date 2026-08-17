@@ -20,7 +20,7 @@ import {
   testLlmSettings,
   toServiceError,
 } from "./core/index.ts";
-import type { ApiSuccessResponse, BatchComment, BatchItem, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, SecuritySettings, UsageLogEntry, VipSession, VipStore } from "./core/index.ts";
+import type { ApiSuccessResponse, BatchComment, BatchItem, BatchPostJob, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, SecuritySettings, UsageLogEntry, VipSession, VipStore } from "./core/index.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import { renderDesignsPage } from "./designs-ui.ts";
 import { renderHomePage } from "./ui.ts";
@@ -173,6 +173,75 @@ export function createApp(options: CreateAppOptions = {}) {
     await recordUsage({ kind: `blocked_${kind}`, ip, path, status: 403, detail });
     await (await creatorStorePromise).recordAudit({ actor: "system", action: "security_blocked_request", ip, detail });
     throw new DouyinServiceError("UNSUPPORTED_CONTENT", `request blocked by security policy: ${reason}`, 403);
+  };
+
+  const postJobQueue = new Map<string, { task: BatchTask; job: BatchPostJob; run: (job: BatchPostJob) => Promise<void> }>();
+  let activePostJobs = 0;
+  let postJobScheduled = false;
+
+  const enqueuePostJob = async (task: BatchTask, job: BatchPostJob, run: (job: BatchPostJob) => Promise<void>) => {
+    task.post_jobs ??= [];
+    task.post_jobs.push(job);
+    postJobQueue.set(job.id, { task, job, run });
+    updatePostJobQueuePositions();
+    await saveBatchTask(task);
+    schedulePostJobs();
+    return job;
+  };
+
+  const schedulePostJobs = () => {
+    if (postJobScheduled) return;
+    postJobScheduled = true;
+    queueMicrotask(() => {
+      postJobScheduled = false;
+      drainPostJobs();
+    });
+  };
+
+  const drainPostJobs = () => {
+    const maxActive = parsePositiveInt(getRuntimeEnv().POST_JOB_MAX_ACTIVE, 2);
+    updatePostJobQueuePositions();
+    while (activePostJobs < maxActive) {
+      const next = [...postJobQueue.values()]
+        .filter((entry) => entry.job.status === "queued")
+        .sort(comparePostJobQueueEntries)[0];
+      if (!next) break;
+      activePostJobs += 1;
+      next.job.status = "running";
+      next.job.queue_position = 0;
+      next.job.started_at ??= new Date().toISOString();
+      next.job.updated_at = new Date().toISOString();
+      void saveBatchTask(next.task);
+      void next
+        .run(next.job)
+        .catch((error) => {
+          next.job.status = "failed";
+          next.job.error = error instanceof Error ? error.message : String(error);
+          next.job.finished_at = new Date().toISOString();
+          next.job.updated_at = next.job.finished_at;
+          void saveBatchTask(next.task);
+        })
+        .finally(() => {
+          postJobQueue.delete(next.job.id);
+          activePostJobs = Math.max(0, activePostJobs - 1);
+          updatePostJobQueuePositions();
+          void saveBatchTask(next.task);
+          schedulePostJobs();
+        });
+    }
+  };
+
+  const updatePostJobQueuePositions = () => {
+    const queued = [...postJobQueue.values()]
+      .filter((entry) => entry.job.status === "queued")
+      .sort(comparePostJobQueueEntries);
+    queued.forEach((entry, index) => {
+      entry.job.queue_position = index + 1;
+      entry.job.updated_at = new Date().toISOString();
+    });
+    for (const entry of postJobQueue.values()) {
+      if (entry.job.status !== "queued") entry.job.queue_position = 0;
+    }
   };
 
   const cleanupOnlineSessions = () => {
@@ -570,6 +639,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const body = await readJsonBody(c);
       const prompt = asString(body.prompt);
       const mode = asString(body.mode) ?? "batch_script";
+      const asyncMode = body.async === true || body.async === "true";
       const limit = Math.min(parsePositiveInt(body.count, task.items.length), getBatchAiLimit(session));
       const items = task.items.filter((item) => item.status === "success").slice(0, limit);
       if (items.length === 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "batch task has no successful video item for AI copywriting", 409);
@@ -578,13 +648,46 @@ export function createApp(options: CreateAppOptions = {}) {
       if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
       await enforceMemberRateLimit("batch_ai", c, session, Math.max(1, Math.floor(aiQuota / 2)), 24 * 60 * 60 * 1000, items.length);
 
-      const results = [];
-      for (const item of items) {
-        const parsed = parsedFromBatchItem(task, item);
-        const ai = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
-        item.ai_copy = ai;
-        results.push({ aweme_id: item.aweme_id, title: item.title, ai_copy: ai });
+      const runAiJob = async (job?: BatchPostJob) => {
+        const results = [];
+        for (const item of items) {
+          try {
+            const parsed = parsedFromBatchItem(task, item);
+            const ai = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
+            item.ai_copy = ai;
+            results.push({ aweme_id: item.aweme_id, title: item.title, ai_copy: ai });
+            if (job) job.success_count += 1;
+          } catch (error) {
+            if (job) job.failed_count += 1;
+            results.push({ aweme_id: item.aweme_id, title: item.title, ai_copy: null, error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            if (job) {
+              job.completed_count = job.success_count + job.failed_count;
+              job.updated_at = new Date().toISOString();
+              await saveBatchTask(task);
+            }
+          }
+        }
+        if (job) {
+          job.status = job.failed_count === job.requested_count ? "failed" : "completed";
+          job.finished_at = new Date().toISOString();
+          job.updated_at = job.finished_at;
+        }
+        await saveBatchTask(task);
+        return results;
+      };
+
+      if (asyncMode) {
+        const job = createBatchPostJob("ai", items.length, permissionsForSession(session).queue_priority, { mode, prompt: prompt ?? null });
+        await enqueuePostJob(task, job, async (runningJob) => {
+          const results = await runAiJob(runningJob);
+          await store.recordUsage({ kind: `batch_ai_${mode}_async_done`, user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/ai`, status: 200, detail: JSON.stringify({ job_id: runningJob.id, count: results.length }) });
+        });
+        await store.recordUsage({ kind: `batch_ai_${mode}_queued`, user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/ai`, status: 202, detail: JSON.stringify({ job_id: job.id, count: items.length }) });
+        return c.json(success({ task_id: task.id, queued: true, job, post_jobs: task.post_jobs }), 202);
       }
+
+      const results = await runAiJob();
       await saveBatchTask(task);
       await store.recordUsage({ kind: `batch_ai_${mode}`, user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/ai`, status: 200, detail: JSON.stringify({ count: results.length }) });
       return c.json(success({ task_id: task.id, generated_count: results.length, items: results }));
@@ -720,6 +823,19 @@ export function createApp(options: CreateAppOptions = {}) {
       return c.json(success({ ...data, input_url: inputUrl ?? null }));
     } catch (error) {
       await store.recordUsage({ kind: "comments_fetch", user_key: "unknown", ip: getClientIp(c), path: "/api/v1/comments", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/v1/batch/:id/jobs", async (c) => {
+    try {
+      await guardPublicAccess(c, "batch_post_jobs");
+      const session = await requireVip(c, await getStore());
+      const task = await getBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
+      return c.json(success({ task_id: task.id, jobs: task.post_jobs ?? [], active_count: activePostJobs, max_active: parsePositiveInt(getRuntimeEnv().POST_JOB_MAX_ACTIVE, 2) }));
+    } catch (error) {
       return jsonError(c, error);
     }
   });
@@ -913,23 +1029,53 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       assertBatchTaskAccess(task, session);
       const body = await readJsonBody(c);
+      const asyncMode = body.async === true || body.async === "true";
       const countPerVideo = Math.min(parsePositiveInt(body.count_per_video ?? body.count, 20), 100);
       const requestedIds = readAwemeIdSet(body.aweme_ids);
       const maxItems = Math.min(parsePositiveInt(body.video_count, task.items.length), task.items.length, getBatchParseLimit(session));
       const items = task.items.filter((item) => requestedIds.size === 0 || requestedIds.has(item.aweme_id)).slice(0, maxItems);
       await enforceMemberRateLimit("batch_comments", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000, Math.max(1, items.length));
-      let collectedCount = 0;
-      const results = [];
-      for (const item of items) {
-        try {
-          const fetched = await fetchDouyinComments(item.aweme_id, { ...parserOptions, count: countPerVideo });
-          item.comments = mergeComments(item.comments, fetched.comments);
-          collectedCount += fetched.comments.length;
-          results.push({ aweme_id: item.aweme_id, title: item.title, collected_count: fetched.comments.length, total_comments: item.comments.length, next_cursor: fetched.next_cursor, has_more: fetched.has_more, error: null });
-        } catch (error) {
-          results.push({ aweme_id: item.aweme_id, title: item.title, collected_count: 0, total_comments: item.comments.length, next_cursor: null, has_more: false, error: error instanceof Error ? error.message : String(error) });
+      const runCommentsJob = async (job?: BatchPostJob) => {
+        let collectedCount = 0;
+        const results = [];
+        for (const item of items) {
+          try {
+            const fetched = await fetchDouyinComments(item.aweme_id, { ...parserOptions, count: countPerVideo });
+            item.comments = mergeComments(item.comments, fetched.comments);
+            collectedCount += fetched.comments.length;
+            results.push({ aweme_id: item.aweme_id, title: item.title, collected_count: fetched.comments.length, total_comments: item.comments.length, next_cursor: fetched.next_cursor, has_more: fetched.has_more, error: null });
+            if (job) job.success_count += 1;
+          } catch (error) {
+            if (job) job.failed_count += 1;
+            results.push({ aweme_id: item.aweme_id, title: item.title, collected_count: 0, total_comments: item.comments.length, next_cursor: null, has_more: false, error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            if (job) {
+              job.completed_count = job.success_count + job.failed_count;
+              job.updated_at = new Date().toISOString();
+              await saveBatchTask(task);
+            }
+          }
         }
+        if (job) {
+          job.status = job.failed_count === job.requested_count ? "failed" : "completed";
+          job.finished_at = new Date().toISOString();
+          job.updated_at = job.finished_at;
+        }
+        await saveBatchTask(task);
+        return { collectedCount, results };
+      };
+
+      if (asyncMode) {
+        const job = createBatchPostJob("comments", items.length, permissionsForSession(session).queue_priority, { count_per_video: countPerVideo, video_count: items.length });
+        await enqueuePostJob(task, job, async (runningJob) => {
+          const data = await runCommentsJob(runningJob);
+          await store.recordUsage({ kind: "batch_comments_collect_async_done", user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/comments/collect`, status: 200, detail: JSON.stringify({ job_id: runningJob.id, video_count: items.length, collected_count: data.collectedCount }) });
+        });
+        await store.recordUsage({ kind: "batch_comments_collect_queued", user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/comments/collect`, status: 202, detail: JSON.stringify({ job_id: job.id, video_count: items.length }) });
+        return c.json(success({ task_id: task.id, queued: true, job, post_jobs: task.post_jobs }), 202);
       }
+
+      const { collectedCount, results } = await runCommentsJob();
       await saveBatchTask(task);
       await store.recordUsage({ kind: "batch_comments_collect", user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/comments/collect`, status: 200, detail: JSON.stringify({ video_count: items.length, collected_count: collectedCount }) });
       return c.json(success({ task_id: task.id, video_count: items.length, collected_count: collectedCount, items: results }));
@@ -1325,6 +1471,7 @@ function userTaskSummary(task: BatchTask) {
     progress_percent: task.requested_count ? Math.round((task.completed_count / task.requested_count) * 100) : 0,
     first_cover_url: task.items.find((item) => item.cover_url)?.cover_url ?? null,
     first_title: task.items.find((item) => item.title)?.title ?? null,
+    post_jobs: task.post_jobs ?? [],
   };
 }
 
@@ -1347,6 +1494,7 @@ function adminTaskSummary(task: BatchTask) {
     success_count: task.success_count,
     failed_count: task.failed_count,
     progress_percent: task.requested_count ? Math.round((task.completed_count / task.requested_count) * 100) : 0,
+    post_jobs: task.post_jobs ?? [],
     items_preview: task.items.slice(0, 20).map((item) => ({
       aweme_id: item.aweme_id,
       status: item.status,
@@ -1410,6 +1558,35 @@ function topCounts(keyed: Map<string, number>, keyName: "ip" | "user_key") {
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, 10)
     .map(([key, total]) => ({ [keyName]: key, total }));
+}
+
+function createBatchPostJob(type: "ai" | "comments", requestedCount: number, queuePriority: number, detail: Record<string, unknown>): BatchPostJob {
+  const now = new Date().toISOString();
+  return {
+    id: randomId(),
+    type,
+    status: "queued",
+    queue_priority: queuePriority,
+    queue_position: 0,
+    requested_count: requestedCount,
+    completed_count: 0,
+    success_count: 0,
+    failed_count: 0,
+    created_at: now,
+    updated_at: now,
+    started_at: null,
+    finished_at: null,
+    error: null,
+    detail,
+  };
+}
+
+function comparePostJobQueueEntries(
+  a: { task: BatchTask; job: BatchPostJob },
+  b: { task: BatchTask; job: BatchPostJob },
+): number {
+  if (b.job.queue_priority !== a.job.queue_priority) return b.job.queue_priority - a.job.queue_priority;
+  return a.job.created_at.localeCompare(b.job.created_at);
 }
 
 function normalizeCommentImportPayload(body: Record<string, unknown>): Array<{ aweme_id: string; comments: BatchComment[] }> {
