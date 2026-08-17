@@ -15,6 +15,13 @@ describe("api routes", () => {
     const html = await response.text();
     expect(html).toContain("抖音视频解析");
     expect(html).toContain('id="onlineCount"');
+    expect(html).toContain('id="profilePreviewList"');
+    expect(html).toContain('id="queuePosition"');
+    expect(html).toContain('id="queuePriority"');
+    expect(html).toContain('id="centerDownloadBtn"');
+    expect(html).toContain('id="collectMini"');
+    expect(html).toContain('profilePreviewBtn:$("inspectBtn")');
+    expect(html).not.toContain('profilePreviewBtn:$("profilePreviewBtn")');
 
     const icon = await app.request("/favicon.ico");
     expect(icon.status).toBe(200);
