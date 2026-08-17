@@ -37,6 +37,7 @@
 - 后台支持套餐配置：`GET/POST /api/admin/plans`。
 - 后台支持激活码生成/更新：`GET/POST /api/admin/codes`。
 - 后台支持小米大模型配置和测试连接：`GET/POST /api/admin/settings/llm`、`POST /api/admin/settings/llm/test`。
+- 后台 Google Authenticator 动态码配置闭环已落地：`GET /api/admin/totp`、`POST /api/admin/totp/setup`、`POST /api/admin/totp/verify` 支持生成 Base32 密钥、复制 `otpauth_uri`、验证六位码后启用/停用，并写入审计日志。
 - AI 文案接口已按会员套餐日额度限流：`POST /api/v1/ai/script`。
 - 批量解析按会员套餐限制单次数量和并发。
 
@@ -54,6 +55,7 @@
 - 新增 `/favicon.ico` 兼容路由，减少浏览器默认图标 404。
 - App 图标已补齐：页面声明 `/site.webmanifest` 和 `/apple-touch-icon.svg`，后端提供 `/app-icon.svg`、`/apple-touch-icon.svg`、`/site.webmanifest`，移动端添加到桌面时显示抖映图标。
 - 后台登录失败锁定已落地：默认同 IP + 用户名 15 分钟内失败 5 次后锁定 15 分钟，并写入 `admin_login_failed` / `admin_login_locked` 审计日志；可通过 `ADMIN_LOGIN_MAX_FAILURES`、`ADMIN_LOGIN_WINDOW_MINUTES`、`ADMIN_LOGIN_LOCK_MINUTES` 调整。
+- 后台 TOTP 双重验证已落地：可通过环境变量 `ADMIN_TOTP_SECRET` 强制托管密钥，也可在 `/admin` 自助生成 Google Authenticator 密钥并验证启用；启用后后台账号密码登录必须带六位动态码。
 - 后台限流配置已落地：`GET/POST /api/admin/rate-limits` 支持配置单条解析、媒体代理、批量任务、AI 调用和评论采集额度，并写入 `rate_limits_save` 审计日志；后台页面已加入“接口限流”配置卡片。
 - 后台安全策略已落地：`GET/POST /api/admin/security`、`POST /api/admin/block-ip` 支持 IP 黑名单、Origin/Referer 白名单、浏览器来源头检查和空 User-Agent 拦截，命中后写入 `security_blocked_request` 审计日志。
 - 后台运营管理已落地：`GET /api/admin/jobs`、`POST /api/admin/jobs/:id/retry`、`POST /api/admin/jobs/:id/cancel` 可查看、重试、取消批量任务；`POST /api/admin/jobs/:id/post-jobs/:jobId/cancel` 可取消批量 AI/评论后处理队列；`GET /api/admin/users`、`POST /api/admin/users/:id/plan`、`POST /api/admin/users/:id/disable` 可查看会员、调整套餐和禁用账号。
@@ -580,6 +582,7 @@ POST /api/v1/auth/logout
 POST /api/admin/login
 POST /api/admin/totp/setup
 POST /api/admin/totp/verify
+GET  /api/admin/totp
 GET  /api/admin/dashboard
 GET  /api/admin/usage
 GET  /api/admin/audit-logs

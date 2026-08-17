@@ -156,6 +156,18 @@ export function createApp(options: CreateAppOptions = {}) {
 
   const getEffectiveSecuritySettings = async () => (await creatorStorePromise).getSecuritySettings();
 
+  const getEffectiveAdminTotp = async () => {
+    const envSecret = normalizeTotpSecret(getRuntimeEnv().ADMIN_TOTP_SECRET);
+    if (envSecret) {
+      const stored = await (await creatorStorePromise).getAdminTotpSettings();
+      return { ...stored, enabled: true, secret_masked: maskTotpSecret(envSecret), source: "env", configurable: false, secret: envSecret };
+    }
+    const store = await creatorStorePromise;
+    const settings = await store.getAdminTotpSettings();
+    const secret = settings.enabled ? normalizeTotpSecret(await store.getRawAdminTotpSecret()) : null;
+    return { ...settings, enabled: Boolean(secret), source: "store", configurable: true, secret };
+  };
+
   const guardPublicAccess = async (c: Context, kind: string) => {
     const settings = await getEffectiveSecuritySettings();
     const reason = securityDenyReason(c, settings);
@@ -883,7 +895,8 @@ export function createApp(options: CreateAppOptions = {}) {
       if (username !== expectedUser || password !== expectedPassword) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin credentials are invalid", 403);
       }
-      if (env.ADMIN_TOTP_SECRET && !(await verifyTotpCode(env.ADMIN_TOTP_SECRET, totp))) {
+      const adminTotp = await getEffectiveAdminTotp();
+      if (adminTotp.secret && !(await verifyTotpCode(adminTotp.secret, totp))) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin totp code is invalid", 403);
       }
       clearAdminLoginFailure(loginKey);
@@ -893,7 +906,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const csrfToken = randomId();
       appendSetCookies(c, [buildAdminCookie(token, 8 * 60 * 60, getPublicRequestUrl(c)), buildCsrfCookie("admin_csrf", csrfToken, 8 * 60 * 60, getPublicRequestUrl(c))]);
       await store.recordAudit({ actor: username, action: "admin_login", ip, detail: "success" });
-      return c.json(success({ token, csrf_token: csrfToken, expires_at: new Date(expiresAt).toISOString(), totp_enabled: Boolean(env.ADMIN_TOTP_SECRET) }));
+      return c.json(success({ token, csrf_token: csrfToken, expires_at: new Date(expiresAt).toISOString(), totp_enabled: adminTotp.enabled, totp_source: adminTotp.source }));
     } catch (error) {
       const serviceError = toServiceError(error);
       const loginFailed = serviceError.status === 403 && /credentials|totp/.test(serviceError.detail);
@@ -910,6 +923,57 @@ export function createApp(options: CreateAppOptions = {}) {
           locked_until: failure?.locked_until ?? null,
         }),
       });
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/admin/totp", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      const { secret: _secret, ...data } = await getEffectiveAdminTotp();
+      return c.json(success(data));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/totp/setup", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions, { mutation: true });
+      const body = await readJsonBody(c);
+      const issuer = asString(body.issuer) ?? "抖映灵感台";
+      const account = asString(body.account) ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
+      const secret = generateTotpSecret();
+      const otpauth_uri = buildOtpAuthUri({ issuer, account, secret });
+      await store.recordAudit({ actor: "admin", action: "admin_totp_setup_created", ip: getClientIp(c), detail: JSON.stringify({ issuer, account }) });
+      return c.json(success({ enabled: false, secret, issuer, account, otpauth_uri }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/totp/verify", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions, { mutation: true });
+      const body = await readJsonBody(c);
+      if (body.enabled === false || body.disable === true) {
+        if (normalizeTotpSecret(getRuntimeEnv().ADMIN_TOTP_SECRET)) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "ADMIN_TOTP_SECRET is configured in environment", 409);
+        const data = await store.saveAdminTotpSettings({ enabled: false, secret: null });
+        await store.recordAudit({ actor: "admin", action: "admin_totp_disable", ip: getClientIp(c), detail: "disabled" });
+        return c.json(success({ ...data, source: "store", configurable: true }));
+      }
+      const secret = normalizeTotpSecret(body.secret);
+      const code = asString(body.code);
+      if (!secret) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp secret is required", 400);
+      if (!(await verifyTotpCode(secret, code))) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp code is invalid", 403);
+      const issuer = asString(body.issuer) ?? "抖映灵感台";
+      const account = asString(body.account) ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
+      const data = await store.saveAdminTotpSettings({ enabled: true, secret, issuer, account });
+      await store.recordAudit({ actor: "admin", action: "admin_totp_enable", ip: getClientIp(c), detail: JSON.stringify({ issuer, account }) });
+      return c.json(success({ ...data, source: "store", configurable: true }));
+    } catch (error) {
       return jsonError(c, error);
     }
   });
@@ -2355,6 +2419,57 @@ async function generateTotpCode(secret: string, step: number): Promise<string> {
   const offset = digest[digest.length - 1] & 0x0f;
   const binary = ((digest[offset] & 0x7f) << 24) | ((digest[offset + 1] & 0xff) << 16) | ((digest[offset + 2] & 0xff) << 8) | (digest[offset + 3] & 0xff);
   return String(binary % 1_000_000).padStart(6, "0");
+}
+
+function generateTotpSecret(byteLength = 20): string {
+  const bytes = new Uint8Array(byteLength);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  }
+  return base32Encode(bytes);
+}
+
+function buildOtpAuthUri(input: { issuer: string; account: string; secret: string }): string {
+  const issuer = input.issuer.trim() || "抖映灵感台";
+  const account = input.account.trim() || "admin";
+  const label = `${issuer}:${account}`;
+  const url = new URL(`otpauth://totp/${encodeURIComponent(label)}`);
+  url.searchParams.set("secret", input.secret);
+  url.searchParams.set("issuer", issuer);
+  url.searchParams.set("algorithm", "SHA1");
+  url.searchParams.set("digits", "6");
+  url.searchParams.set("period", "30");
+  return url.toString();
+}
+
+function normalizeTotpSecret(value: unknown): string | null {
+  const secret = asString(value)?.toUpperCase().replace(/[^A-Z2-7]/g, "") ?? "";
+  return secret.length >= 16 ? secret : null;
+}
+
+function maskTotpSecret(value: string | null): string | null {
+  const secret = normalizeTotpSecret(value);
+  if (!secret) return null;
+  return secret.length <= 8 ? "****" : `${secret.slice(0, 4)}****${secret.slice(-4)}`;
+}
+
+function base32Encode(bytes: Uint8Array): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let output = "";
+  let bits = 0;
+  let value = 0;
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) output += alphabet[(value << (5 - bits)) & 31];
+  return output;
 }
 
 function base32Decode(input: string): Uint8Array {

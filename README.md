@@ -15,7 +15,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Async batch post-processing queue for batch AI copywriting and batch comments collection; progress is persisted in each batch task.
 - Single and batch comments collection/import/export.
 - Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
-- Admin console `/admin` with password + optional Google Authenticator/TOTP, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
+- Admin console `/admin` with password + Google Authenticator/TOTP self-service setup, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
 - Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
 - Cookie-session mutations use double-submit CSRF tokens; bearer-token API calls remain supported for the web UI and server-side operation.
 - Rate-limit interceptions are recorded in usage logs and audit logs as `rate_limit_block`.
@@ -156,6 +156,9 @@ Content-Type: application/json
 ```http
 GET  /admin
 POST /api/admin/login
+GET  /api/admin/totp
+POST /api/admin/totp/setup
+POST /api/admin/totp/verify
 GET  /api/admin/settings/llm
 POST /api/admin/settings/llm
 POST /api/admin/settings/llm/test
@@ -181,7 +184,7 @@ GET  /api/admin/codes
 POST /api/admin/codes
 ```
 
-Admin login supports username/password plus optional Google Authenticator/TOTP. Failed login attempts are locked by IP + username. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
+Admin login supports username/password plus Google Authenticator/TOTP. `/api/admin/totp/setup` returns a Base32 secret and `otpauth_uri`; `/api/admin/totp/verify` enables or disables the stored TOTP after code verification. Failed login attempts are locked by IP + username. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
 
 ## Environment Variables
 
@@ -193,7 +196,7 @@ Admin login supports username/password plus optional Google Authenticator/TOTP. 
 | `VIP_SESSION_DAYS` | `30` | Member session days |
 | `ADMIN_USERNAME` | `admin` | Admin username |
 | `ADMIN_PASSWORD` | empty | Admin password; required for `/api/admin/login` |
-| `ADMIN_TOTP_SECRET` | empty | Base32 TOTP secret for Google Authenticator |
+| `ADMIN_TOTP_SECRET` | empty | Optional env-managed Base32 TOTP secret; when empty, configure TOTP from `/admin` |
 | `ADMIN_TOKEN` | empty | Optional direct admin bearer token for server-side operation |
 | `ADMIN_LOGIN_MAX_FAILURES` | `5` | Failed admin login attempts before lockout |
 | `ADMIN_LOGIN_WINDOW_MINUTES` | `15` | Failure counting window |

@@ -1,9 +1,39 @@
 import { describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
 import { createApp } from "../src/app.ts";
 import { createMemoryCreatorStore, createMemoryVipStore } from "../src/core/index.ts";
 import { IMAGE_HTML, makeFixtureFetcher, VIDEO_HTML } from "./fixtures.ts";
 
 const encodedUrl = encodeURIComponent("https://v.douyin.com/abc123/");
+
+function currentTotpCode(secret: string, step = Math.floor(Date.now() / 30_000)): string {
+  const key = testBase32Decode(secret);
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(step));
+  const digest = createHmac("sha1", key).update(counter).digest();
+  const offset = digest[digest.length - 1] & 0x0f;
+  const binary = ((digest[offset] & 0x7f) << 24) | ((digest[offset + 1] & 0xff) << 16) | ((digest[offset + 2] & 0xff) << 8) | (digest[offset + 3] & 0xff);
+  return String(binary % 1_000_000).padStart(6, "0");
+}
+
+function testBase32Decode(input: string): Buffer {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const clean = input.toUpperCase().replace(/[^A-Z2-7]/g, "");
+  const bytes: number[] = [];
+  let bits = 0;
+  let value = 0;
+  for (const char of clean) {
+    const index = alphabet.indexOf(char);
+    if (index < 0) continue;
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
 
 describe("api routes", () => {
   it("renders the Douyin-style UI on root without url", async () => {
@@ -77,6 +107,8 @@ describe("api routes", () => {
     expect(response.status).toBe(200);
     expect(html).toContain("&#25238;&#26144;&#28789;&#24863;&#21488;&#21518;&#21488;");
     expect(html).toContain("/api/admin/rate-limits");
+    expect(html).toContain("/api/admin/totp/setup");
+    expect(html).toContain('id="totpSecret"');
     expect(html).toContain("/api/admin/usage/summary");
     expect(html).toContain("/api/admin/security");
     expect(html).toContain("/api/admin/jobs");
@@ -190,6 +222,94 @@ describe("api routes", () => {
       });
       expect(allowed.status).toBe(200);
       expect((await allowed.json()).data.parse_per_minute).toBe(5);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+      if (oldUser === undefined) delete process.env.ADMIN_USERNAME;
+      else process.env.ADMIN_USERNAME = oldUser;
+      if (oldPassword === undefined) delete process.env.ADMIN_PASSWORD;
+      else process.env.ADMIN_PASSWORD = oldPassword;
+      if (oldTotp === undefined) delete process.env.ADMIN_TOTP_SECRET;
+      else process.env.ADMIN_TOTP_SECRET = oldTotp;
+    }
+  });
+
+  it("lets admin set up Google Authenticator TOTP and requires it on login", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    const oldUser = process.env.ADMIN_USERNAME;
+    const oldPassword = process.env.ADMIN_PASSWORD;
+    const oldTotp = process.env.ADMIN_TOTP_SECRET;
+    process.env.ADMIN_TOKEN = "totp-admin-token";
+    process.env.ADMIN_USERNAME = "admin";
+    process.env.ADMIN_PASSWORD = "totp-password";
+    delete process.env.ADMIN_TOTP_SECRET;
+    try {
+      const creatorStore = createMemoryCreatorStore();
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore });
+      const adminHeaders = { authorization: "Bearer totp-admin-token", "content-type": "application/json" };
+
+      const initial = await app.request("/api/admin/totp", { headers: adminHeaders });
+      const initialBody = await initial.json();
+      expect(initial.status).toBe(200);
+      expect(initialBody.data).toMatchObject({ enabled: false, source: "store", configurable: true });
+
+      const setup = await app.request("/api/admin/totp/setup", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({ issuer: "抖映灵感台", account: "admin" }),
+      });
+      const setupBody = await setup.json();
+      expect(setup.status).toBe(200);
+      expect(setupBody.data.secret.length).toBeGreaterThanOrEqual(16);
+      expect(setupBody.data.otpauth_uri).toContain("otpauth://totp/");
+      const validTotp = currentTotpCode(setupBody.data.secret);
+      const wrongTotp = validTotp === "000000" ? "000001" : "000000";
+
+      const wrong = await app.request("/api/admin/totp/verify", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({ secret: setupBody.data.secret, code: wrongTotp }),
+      });
+      expect(wrong.status).toBe(403);
+
+      const enabled = await app.request("/api/admin/totp/verify", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({ secret: setupBody.data.secret, code: validTotp, issuer: "抖映灵感台", account: "admin" }),
+      });
+      const enabledBody = await enabled.json();
+      expect(enabled.status).toBe(200);
+      expect(enabledBody.data.enabled).toBe(true);
+      expect(enabledBody.data.secret_masked).toContain("****");
+
+      const loginWithoutTotp = await app.request("/api/admin/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "totp-password" }),
+      });
+      expect(loginWithoutTotp.status).toBe(403);
+
+      const loginWithTotp = await app.request("/api/admin/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "totp-password", totp: currentTotpCode(setupBody.data.secret) }),
+      });
+      const loginWithTotpBody = await loginWithTotp.json();
+      expect(loginWithTotp.status).toBe(200);
+      expect(loginWithTotpBody.data).toMatchObject({ totp_enabled: true, totp_source: "store" });
+
+      const disabled = await app.request("/api/admin/totp/verify", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({ enabled: false }),
+      });
+      expect(disabled.status).toBe(200);
+      expect((await disabled.json()).data.enabled).toBe(false);
+
+      const audit = await app.request("/api/admin/audit-logs?limit=10", { headers: adminHeaders });
+      const auditBody = await audit.json();
+      expect(auditBody.data.some((entry: any) => entry.action === "admin_totp_enable")).toBe(true);
+      expect(auditBody.data.some((entry: any) => entry.action === "admin_totp_disable")).toBe(true);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;

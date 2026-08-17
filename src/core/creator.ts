@@ -56,6 +56,21 @@ export interface SecuritySettingsInput {
   block_empty_user_agent?: boolean;
 }
 
+export interface AdminTotpSettings {
+  enabled: boolean;
+  secret_masked: string | null;
+  issuer: string;
+  account: string;
+  updated_at: string | null;
+}
+
+export interface AdminTotpSettingsInput {
+  enabled?: boolean;
+  secret?: string | null;
+  issuer?: string;
+  account?: string;
+}
+
 export interface AiCopyResult {
   provider: "xiaomi" | "local_template";
   mode: string;
@@ -114,6 +129,9 @@ export interface CreatorStore {
   saveRateLimitSettings(input: RateLimitSettingsInput): Promise<RateLimitSettings>;
   getSecuritySettings(): Promise<SecuritySettings>;
   saveSecuritySettings(input: SecuritySettingsInput): Promise<SecuritySettings>;
+  getAdminTotpSettings(): Promise<AdminTotpSettings>;
+  getRawAdminTotpSecret(): Promise<string | null>;
+  saveAdminTotpSettings(input: AdminTotpSettingsInput): Promise<AdminTotpSettings>;
   recordUsage(input: UsageLogInput): Promise<void>;
   recordAudit(input: AuditLogInput): Promise<void>;
   getMetrics(): Promise<Record<string, number>>;
@@ -144,6 +162,13 @@ export const DEFAULT_SECURITY_SETTINGS: Omit<SecuritySettings, "updated_at"> = {
   allowed_origin_hosts: [],
   require_browser_headers: false,
   block_empty_user_agent: false,
+};
+
+export const DEFAULT_ADMIN_TOTP_SETTINGS: Omit<AdminTotpSettings, "updated_at"> = {
+  enabled: false,
+  secret_masked: null,
+  issuer: "抖映灵感台",
+  account: "admin",
 };
 
 let creatorSingleton: Promise<CreatorStore> | null = null;
@@ -282,7 +307,9 @@ class MemoryCreatorStore implements CreatorStore {
   private settings = { ...DEFAULT_LLM_SETTINGS, updated_at: null } as LlmSettings;
   private rateLimits = { ...DEFAULT_RATE_LIMIT_SETTINGS, updated_at: null } as RateLimitSettings;
   private security = { ...DEFAULT_SECURITY_SETTINGS, updated_at: null } as SecuritySettings;
+  private adminTotp = { ...DEFAULT_ADMIN_TOTP_SETTINGS, updated_at: null } as AdminTotpSettings;
   private apiKey: string | null = null;
+  private adminTotpSecret: string | null = null;
   private usage: UsageLogEntry[] = [];
   private audits: AuditLogEntry[] = [];
   private usageId = 1;
@@ -312,6 +339,18 @@ class MemoryCreatorStore implements CreatorStore {
   async saveSecuritySettings(input: SecuritySettingsInput): Promise<SecuritySettings> {
     this.security = normalizeSecuritySettings(input, this.security);
     return this.getSecuritySettings();
+  }
+  async getAdminTotpSettings(): Promise<AdminTotpSettings> {
+    return { ...this.adminTotp, enabled: this.adminTotp.enabled && Boolean(this.adminTotpSecret), secret_masked: maskSecret(this.adminTotpSecret) };
+  }
+  async getRawAdminTotpSecret(): Promise<string | null> {
+    return this.adminTotp.enabled ? this.adminTotpSecret : null;
+  }
+  async saveAdminTotpSettings(input: AdminTotpSettingsInput): Promise<AdminTotpSettings> {
+    this.adminTotp = normalizeAdminTotpSettings(input, this.adminTotp);
+    if (input.secret !== undefined) this.adminTotpSecret = normalizeTotpSecret(input.secret);
+    if (!this.adminTotp.enabled) this.adminTotpSecret = null;
+    return this.getAdminTotpSettings();
   }
   async recordUsage(input: UsageLogInput): Promise<void> {
     const created_at = Date.now();
@@ -397,6 +436,36 @@ class SqliteCreatorStore implements CreatorStore {
     const settings = normalizeSecuritySettings(input, current);
     this.writeJson("security_settings", settings);
     return settings;
+  }
+
+  async getAdminTotpSettings(): Promise<AdminTotpSettings> {
+    const raw = this.readJson("admin_totp_settings");
+    const settings = normalizeAdminTotpSettings(raw, { ...DEFAULT_ADMIN_TOTP_SETTINGS, updated_at: null }, false);
+    const secret = await this.getRawAdminTotpSecret();
+    return { ...settings, enabled: settings.enabled && Boolean(secret), secret_masked: maskSecret(secret) };
+  }
+
+  async getRawAdminTotpSecret(): Promise<string | null> {
+    const row = this.db.prepare("SELECT value FROM creator_settings WHERE key = 'admin_totp_secret'").get() as { value?: string } | undefined;
+    return normalizeTotpSecret(row?.value ?? null);
+  }
+
+  async saveAdminTotpSettings(input: AdminTotpSettingsInput): Promise<AdminTotpSettings> {
+    const current = await this.getAdminTotpSettings();
+    const settings = normalizeAdminTotpSettings(input, current);
+    this.writeJson("admin_totp_settings", { ...settings, secret_masked: null });
+    if (input.secret !== undefined) {
+      const secret = normalizeTotpSecret(input.secret);
+      if (secret) {
+        this.db
+          .prepare("INSERT INTO creator_settings (key, value, updated_at) VALUES ('admin_totp_secret', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+          .run(secret, Date.now());
+      } else {
+        this.db.prepare("DELETE FROM creator_settings WHERE key = 'admin_totp_secret'").run();
+      }
+    }
+    if (!settings.enabled) this.db.prepare("DELETE FROM creator_settings WHERE key = 'admin_totp_secret'").run();
+    return this.getAdminTotpSettings();
   }
 
   async recordUsage(input: UsageLogInput): Promise<void> {
@@ -523,6 +592,19 @@ function normalizeSecuritySettings(input: SecuritySettingsInput | Record<string,
   };
 }
 
+function normalizeAdminTotpSettings(input: AdminTotpSettingsInput | Record<string, unknown>, current: AdminTotpSettings, touch = true): AdminTotpSettings {
+  const record = input as Record<string, unknown>;
+  const issuer = asString(record.issuer) ?? current.issuer ?? DEFAULT_ADMIN_TOTP_SETTINGS.issuer;
+  const account = asString(record.account) ?? current.account ?? DEFAULT_ADMIN_TOTP_SETTINGS.account;
+  return {
+    enabled: typeof record.enabled === "boolean" ? record.enabled : current.enabled,
+    secret_masked: current.secret_masked ?? null,
+    issuer: trimText(issuer, 80),
+    account: trimText(account, 120),
+    updated_at: touch ? new Date().toISOString() : (asString(record.updated_at) ?? current.updated_at ?? null),
+  };
+}
+
 async function callOpenAiCompatible(options: {
   settings: LlmSettings;
   apiKey: string;
@@ -579,6 +661,18 @@ function maskKey(value: string | null): string | null {
   if (!value) return null;
   if (value.length <= 8) return "****";
   return `${value.slice(0, 3)}****${value.slice(-4)}`;
+}
+
+function maskSecret(value: string | null): string | null {
+  const secret = normalizeTotpSecret(value);
+  if (!secret) return null;
+  if (secret.length <= 8) return "****";
+  return `${secret.slice(0, 4)}****${secret.slice(-4)}`;
+}
+
+function normalizeTotpSecret(value: unknown): string | null {
+  const secret = asString(value)?.toUpperCase().replace(/[^A-Z2-7]/g, "") ?? "";
+  return secret.length >= 16 ? secret : null;
 }
 
 function asString(value: unknown): string | null {
