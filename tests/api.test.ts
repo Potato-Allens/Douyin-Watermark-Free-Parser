@@ -160,6 +160,34 @@ describe("api routes", () => {
     expect(body.data.download.download_url).toContain("/api/v1/download?url=");
   });
 
+  it("records public parse usage and rate limits repeated parse calls", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    const oldLimit = process.env.PARSE_RATE_LIMIT_PER_MINUTE;
+    process.env.ADMIN_TOKEN = "usage-admin-token";
+    process.env.PARSE_RATE_LIMIT_PER_MINUTE = "1";
+    try {
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), cacheTtlMs: 0 });
+      const first = await app.request(`/api/v1/parse?url=${encodedUrl}`);
+      const second = await app.request(`/api/v1/parse?url=${encodedUrl}`);
+      const secondBody = await second.json();
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(429);
+      expect(secondBody.code).toBe("UNSUPPORTED_CONTENT");
+
+      const usage = await app.request("/api/admin/usage?limit=10", { headers: { authorization: "Bearer usage-admin-token" } });
+      const usageBody = await usage.json();
+      expect(usage.status).toBe(200);
+      expect(usageBody.data.some((entry: any) => entry.kind === "parse" && entry.status === 200)).toBe(true);
+      expect(usageBody.data.some((entry: any) => entry.kind === "parse" && entry.status === 429)).toBe(true);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+      if (oldLimit === undefined) delete process.env.PARSE_RATE_LIMIT_PER_MINUTE;
+      else process.env.PARSE_RATE_LIMIT_PER_MINUTE = oldLimit;
+    }
+  });
+
   it("uses forwarded https origin for generated proxy urls", async () => {
     const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML) });
     const response = await app.request(`/api/v1/parse?url=${encodedUrl}`, {

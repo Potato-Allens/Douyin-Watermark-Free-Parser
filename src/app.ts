@@ -48,6 +48,28 @@ export function createApp(options: CreateAppOptions = {}) {
   const creatorStorePromise = getCreatorStore();
   const adminSessions = new Map<string, number>();
   const rateBuckets = new Map<string, { resetAt: number; count: number }>();
+  const parseRateLimit = parsePositiveInt(getRuntimeEnv().PARSE_RATE_LIMIT_PER_MINUTE, 60);
+  const mediaRateLimit = parsePositiveInt(getRuntimeEnv().MEDIA_RATE_LIMIT_PER_MINUTE, 120);
+  const batchRateLimit = parsePositiveInt(getRuntimeEnv().BATCH_RATE_LIMIT_PER_HOUR, 30);
+
+  const recordUsage = async (input: { kind: string; user_key?: string; ip: string; path: string; status: number; detail?: string | null }) => {
+    try {
+      await (await creatorStorePromise).recordUsage({
+        kind: input.kind,
+        user_key: input.user_key ?? "guest",
+        ip: input.ip,
+        path: input.path,
+        status: input.status,
+        detail: input.detail ?? null,
+      });
+    } catch {
+      // Usage logging must never break the user-facing parsing flow.
+    }
+  };
+
+  const enforcePublicRateLimit = (kind: string, c: Context, limit: number, windowMs = 60_000, cost = 1) => {
+    enforceRateLimit(rateBuckets, `${kind}:${getClientIp(c)}`, limit, windowMs, cost);
+  };
 
   const cleanupOnlineSessions = () => {
     const now = Date.now();
@@ -89,7 +111,10 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/", async (c) => {
     const requestUrl = new URL(c.req.url);
     if (!requestUrl.searchParams.has("url")) return c.html(renderHomePage());
-    return handleCompat(c.req.url, parseForRequest);
+    return handleCompat(c.req.url, parseForRequest, {
+      before: () => enforcePublicRateLimit("compat_parse", c, parseRateLimit),
+      after: (status, detail) => recordUsage({ kind: "compat_parse", ip: getClientIp(c), path: "/", status, detail }),
+    });
   });
 
   app.get("/admin", (c) => c.html(renderAdminPage()));
@@ -97,18 +122,27 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/designs", (c) => c.html(renderDesignsPage()));
 
   app.get("/api/hello", async (c) => {
-    return handleCompat(c.req.url, parseForRequest);
+    return handleCompat(c.req.url, parseForRequest, {
+      before: () => enforcePublicRateLimit("compat_parse", c, parseRateLimit),
+      after: (status, detail) => recordUsage({ kind: "compat_parse", ip: getClientIp(c), path: "/api/hello", status, detail }),
+    });
   });
 
   app.get("/api/v1/parse", async (c) => {
     const requestUrl = new URL(c.req.url);
     const inputUrl = requestUrl.searchParams.get("url");
-    if (!inputUrl) return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
+    if (!inputUrl) {
+      await recordUsage({ kind: "parse", ip: getClientIp(c), path: "/api/v1/parse", status: 400, detail: "missing url" });
+      return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
+    }
 
     try {
+      enforcePublicRateLimit("parse", c, parseRateLimit);
       const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
+      await recordUsage({ kind: "parse", ip: getClientIp(c), path: "/api/v1/parse", status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, type: parsed.media.type }) });
       return c.json(success(parsed));
     } catch (error) {
+      await recordUsage({ kind: "parse", ip: getClientIp(c), path: "/api/v1/parse", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
@@ -116,10 +150,17 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/v1/media", async (c) => {
     const requestUrl = new URL(c.req.url);
     const mediaUrl = requestUrl.searchParams.get("url");
-    if (!mediaUrl) return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
+    if (!mediaUrl) {
+      await recordUsage({ kind: "media_proxy", ip: getClientIp(c), path: "/api/v1/media", status: 400, detail: "missing url" });
+      return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
+    }
     try {
-      return await proxyMediaUrl(mediaUrl, c.req.raw, "inline", requestUrl.searchParams.get("filename"));
+      enforcePublicRateLimit("media_proxy", c, mediaRateLimit);
+      const response = await proxyMediaUrl(mediaUrl, c.req.raw, "inline", requestUrl.searchParams.get("filename"));
+      await recordUsage({ kind: "media_proxy", ip: getClientIp(c), path: "/api/v1/media", status: response.status, detail: safeUsageUrlDetail(mediaUrl) });
+      return response;
     } catch (error) {
+      await recordUsage({ kind: "media_proxy", ip: getClientIp(c), path: "/api/v1/media", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
@@ -127,10 +168,17 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/v1/download", async (c) => {
     const requestUrl = new URL(c.req.url);
     const mediaUrl = requestUrl.searchParams.get("url");
-    if (!mediaUrl) return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
+    if (!mediaUrl) {
+      await recordUsage({ kind: "download_proxy", ip: getClientIp(c), path: "/api/v1/download", status: 400, detail: "missing url" });
+      return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
+    }
     try {
-      return await proxyMediaUrl(mediaUrl, c.req.raw, "attachment", requestUrl.searchParams.get("filename"));
+      enforcePublicRateLimit("download_proxy", c, mediaRateLimit);
+      const response = await proxyMediaUrl(mediaUrl, c.req.raw, "attachment", requestUrl.searchParams.get("filename"));
+      await recordUsage({ kind: "download_proxy", ip: getClientIp(c), path: "/api/v1/download", status: response.status, detail: safeUsageUrlDetail(mediaUrl) });
+      return response;
     } catch (error) {
+      await recordUsage({ kind: "download_proxy", ip: getClientIp(c), path: "/api/v1/download", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
@@ -259,26 +307,34 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.post("/api/v1/batch/inspect", async (c) => {
+    let sessionKey = "unknown";
     try {
       const session = await requireVip(c, await getStore());
+      sessionKey = session.code;
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
       const maxItems = Math.min(parsePositiveInt(body.count ?? body.max_items, getBatchParseLimit(session)), getBatchParseLimit(session));
+      enforceRateLimit(rateBuckets, `batch-inspect:${session.code}:${getClientIp(c)}`, batchRateLimit, 60 * 60 * 1000);
       const data = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems });
+      await recordUsage({ kind: "batch_inspect", user_key: session.code, ip: getClientIp(c), path: "/api/v1/batch/inspect", status: 200, detail: JSON.stringify({ requested_count: maxItems, available_count: data.available_count, total_count: data.total_count }) });
       return c.json(success(data));
     } catch (error) {
+      await recordUsage({ kind: "batch_inspect", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/batch/inspect", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
 
   app.post("/api/v1/profile/preview", async (c) => {
+    let sessionKey = "unknown";
     try {
       const session = await requireVip(c, await getStore());
+      sessionKey = session.code;
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
       const previewLimit = Math.min(parsePositiveInt(body.count, 8), getBatchParseLimit(session), 24);
+      enforceRateLimit(rateBuckets, `profile-preview:${session.code}:${getClientIp(c)}`, Math.max(20, batchRateLimit), 60 * 60 * 1000);
       const inspect = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems: previewLimit });
       const ids = inspect.aweme_ids.slice(0, previewLimit);
       const publicRequestUrl = getPublicRequestUrl(c);
@@ -303,15 +359,19 @@ export function createApp(options: CreateAppOptions = {}) {
           });
         }
       }
+      await recordUsage({ kind: "profile_preview", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/preview", status: 200, detail: JSON.stringify({ preview_count: items.length, total_count: inspect.total_count }) });
       return c.json(success({ ...inspect, preview_count: items.length, items }));
     } catch (error) {
+      await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
 
   app.post("/api/v1/batch/start", async (c) => {
+    let sessionKey = "unknown";
     try {
       const session = await requireVip(c, await getStore());
+      sessionKey = session.code;
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
@@ -319,6 +379,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const maxCount = getBatchParseLimit(session);
       if (count > maxCount) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${maxCount} works per batch`, 403);
       const concurrency = Math.min(parsePositiveInt(body.concurrency, 3), getConcurrencyLimit(session));
+      enforceRateLimit(rateBuckets, `batch-start:${session.code}:${getClientIp(c)}`, batchRateLimit, 60 * 60 * 1000);
       const publicRequestUrl = getPublicRequestUrl(c);
       const permissions = permissionsForSession(session);
       const task = await startBatchTask({
@@ -331,8 +392,10 @@ export function createApp(options: CreateAppOptions = {}) {
         ownerKey: session.code,
         queuePriority: permissions.queue_priority,
       });
+      await recordUsage({ kind: "batch_start", user_key: session.code, ip: getClientIp(c), path: "/api/v1/batch/start", status: 200, detail: JSON.stringify({ task_id: task.id, requested_count: task.requested_count, concurrency: task.concurrency, queue_priority: task.queue_priority }) });
       return c.json(success(task));
     } catch (error) {
+      await recordUsage({ kind: "batch_start", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/batch/start", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
@@ -724,10 +787,15 @@ export function createApp(options: CreateAppOptions = {}) {
   return app;
 }
 
-async function handleCompat(requestUrl: string, parseForRequest: (inputUrl: string) => Promise<ParsedDouyinInfo>): Promise<Response> {
+async function handleCompat(
+  requestUrl: string,
+  parseForRequest: (inputUrl: string) => Promise<ParsedDouyinInfo>,
+  hooks: { before?: () => void | Promise<void>; after?: (status: number, detail: string | null) => void | Promise<void> } = {},
+): Promise<Response> {
   const url = new URL(requestUrl);
   const inputUrl = url.searchParams.get("url");
   if (!inputUrl) {
+    await hooks.after?.(400, "missing url");
     return new Response("请提供url参数", {
       status: 400,
       headers: { "content-type": "text/plain; charset=utf-8" },
@@ -735,8 +803,10 @@ async function handleCompat(requestUrl: string, parseForRequest: (inputUrl: stri
   }
 
   try {
+    await hooks.before?.();
     const parsed = await parseForRequest(inputUrl);
     if (url.searchParams.has("data")) {
+      await hooks.after?.(200, JSON.stringify({ aweme_id: parsed.source.aweme_id, mode: "data", type: parsed.media.type }));
       return new Response(JSON.stringify(parsed.compat), {
         status: 200,
         headers: { "content-type": "application/json; charset=utf-8" },
@@ -747,12 +817,14 @@ async function handleCompat(requestUrl: string, parseForRequest: (inputUrl: stri
       throw new DouyinServiceError("UNSUPPORTED_CONTENT", "video_url is not available for image content");
     }
 
+    await hooks.after?.(200, JSON.stringify({ aweme_id: parsed.source.aweme_id, mode: "text", type: parsed.media.type }));
     return new Response(parsed.media.video_url, {
       status: 200,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   } catch (error) {
     const serviceError = toServiceError(error);
+    await hooks.after?.(serviceError.status, serviceError.message);
     return new Response(serviceError.message, {
       status: serviceError.status,
       headers: { "content-type": "text/plain; charset=utf-8" },
@@ -1220,6 +1292,15 @@ function base32Decode(input: string): Uint8Array {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function safeUsageUrlDetail(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    return JSON.stringify({ host: url.hostname, pathname: url.pathname.slice(0, 96) });
+  } catch {
+    return "invalid url";
+  }
 }
 
 function parsePositiveInt(value: unknown, fallback: number): number {
