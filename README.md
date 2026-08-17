@@ -14,7 +14,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Profile works preview, member-isolated batch task history, persistent queue progress, and JSON/CSV/text/cover ZIP/comment export.
 - Async batch post-processing queue for batch AI copywriting and batch comments collection; progress is persisted in each batch task.
 - Single and batch comments collection/import/export.
-- Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
+- Transcript-draft parsing plus Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
 - Admin console `/admin` with password + Google Authenticator/TOTP self-service setup, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
 - Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
 - Cookie-session mutations use double-submit CSRF tokens; bearer-token API calls remain supported for the web UI and server-side operation.
@@ -138,6 +138,8 @@ GET  /api/v1/comments?aweme_id=<id>&count=20
 GET  /api/v1/batch/:id/comments
 POST /api/v1/batch/:id/comments/import
 POST /api/v1/batch/:id/comments/collect
+POST /api/v1/ai/transcript
+POST /api/v1/ai/script
 ```
 
 For batch AI and comments collection, pass `"async": true` to queue the operation and poll `GET /api/v1/batch/:id` or `GET /api/v1/batch/:id/jobs` for `post_jobs` progress.

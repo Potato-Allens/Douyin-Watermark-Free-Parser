@@ -4,6 +4,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
   DouyinServiceError,
   cancelBatchTask,
+  createTranscriptDraft,
   fetchDouyinComments,
   generateAiCopy,
   getBatchQueueSnapshot,
@@ -799,6 +800,38 @@ export function createApp(options: CreateAppOptions = {}) {
       await saveBatchTask(task);
       return c.json(success({ task_id: task.id, imported_count: imported, items: task.items.map((item) => ({ aweme_id: item.aweme_id, comment_count: item.comments.length })) }));
     } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/ai/transcript", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      await guardPublicAccess(c, "ai_transcript");
+      const session = await requireVip(c, await getStore(), { mutation: true });
+      const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
+      if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
+      await enforceMemberRateLimit("ai_transcript", c, session, aiQuota, 24 * 60 * 60 * 1000);
+      const body = await readJsonBody(c);
+      const inputUrl = asString(body.url);
+      if (!inputUrl) throw new DouyinServiceError("MISSING_URL");
+      const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
+      const transcript = createTranscriptDraft(parsed);
+      await store.recordUsage({ kind: "ai_transcript", user_key: session.code, ip: getClientIp(c), path: "/api/v1/ai/transcript", status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id }) });
+      return c.json(
+        success({
+          provider: "metadata_draft",
+          transcript,
+          source: parsed.source,
+          title: parsed.content.desc,
+          author: parsed.author,
+          music: parsed.music,
+          stats: parsed.stats,
+          next: { rewrite_endpoint: "/api/v1/ai/script", mode: "custom_rewrite" },
+        }),
+      );
+    } catch (error) {
+      await store.recordUsage({ kind: "ai_transcript", user_key: "unknown", ip: getClientIp(c), path: "/api/v1/ai/transcript", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });

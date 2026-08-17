@@ -53,6 +53,8 @@ describe("api routes", () => {
     expect(html).toContain('id="centerDownloadBtn"');
     expect(html).toContain('id="commentsBtn"');
     expect(html).toContain('id="commentsList"');
+    expect(html).toContain('id="aiTranscriptBtn"');
+    expect(html).toContain("/api/v1/ai/transcript");
     expect(html).toContain('id="collectBatchCommentsBtn"');
     expect(html).toContain('id="collectMini"');
     expect(html).toContain('downloadExport("covers_zip")');
@@ -566,6 +568,17 @@ describe("api routes", () => {
     });
     expect(allowed.status).toBe(200);
     expect((await allowed.json()).data.rewritten_script).toBeTruthy();
+
+    const transcript = await app.request("/api/v1/ai/transcript", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/" }),
+    });
+    const transcriptBody = await transcript.json();
+    expect(transcript.status).toBe(200);
+    expect(transcriptBody.data.provider).toBe("metadata_draft");
+    expect(transcriptBody.data.transcript).toBeTruthy();
+    expect(transcriptBody.data.next.rewrite_endpoint).toBe("/api/v1/ai/script");
   });
 
   it("lets admin manage member plans and activation codes with admin token", async () => {
