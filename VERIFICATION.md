@@ -448,3 +448,35 @@ Batch API coverage:
 - Calls `/api/v1/batch/:id/ai` and verifies `generated_count = 1`.
 - Calls `/api/v1/batch/:id/export?type=json` and verifies attached JSON contains `ai_copy`.
 - Calls `/api/v1/batch/:id/export?type=scripts` and verifies text contains the expected `aweme_id`.
+## Production Deployment - 2026-08-17 22:05 Asia/Shanghai
+
+Commit deployed: `5477b4f53e2d1a294a1d2fd63a35938e39281c44`
+Domain: `https://dy.devforai.cn`
+
+Deployment evidence:
+- Uploaded archive bytes: `90775`
+- Uploaded archive SHA256: `0A693974CA8E7A9C9C124C6E35D5823A9A495784FC5F0307224394602D132764`
+- Server decode result: `90775 /tmp/douyin-parser-main.tar.gz`
+- Server SHA256 result: `0a693974ca8e7a9c9c124c6e35d5823a9a495784fc5f0307224394602d132764 /tmp/douyin-parser-main.tar.gz`
+- Deploy result: `DEPLOY_OK dy.devforai.cn port=8000 app=/www/wwwroot/dy.devforai.cn log=/root/douyin-parser-deploy.log`
+- systemd result: `douyin-parser.service active (running)`
+
+Production verification:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://dy.devforai.cn/healthz
+```
+Result: HTTP 200, body `{"ok":true,"code":"OK","message":"healthy"}`, exit status 0.
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://dy.devforai.cn/?v=5477b4f
+```
+Result: HTTP 200, page contains `批量生成文案` and `导出 JSON`, exit status 0.
+
+```powershell
+POST https://dy.devforai.cn/api/admin/codes
+POST https://dy.devforai.cn/api/v1/auth/register
+POST https://dy.devforai.cn/api/v1/batch/not-found/ai
+GET  https://dy.devforai.cn/api/v1/batch/not-found/export?type=json
+```
+Result: admin code creation and member registration succeeded; new batch AI route and export route returned controlled `404` for unknown task under a valid member token, proving the deployed routes are active, exit status 0.
