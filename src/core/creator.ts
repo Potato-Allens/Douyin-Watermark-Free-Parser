@@ -41,6 +41,21 @@ export interface RateLimitSettingsInput {
   comments_per_day?: number;
 }
 
+export interface SecuritySettings {
+  blocked_ips: string[];
+  allowed_origin_hosts: string[];
+  require_browser_headers: boolean;
+  block_empty_user_agent: boolean;
+  updated_at: string | null;
+}
+
+export interface SecuritySettingsInput {
+  blocked_ips?: string[] | string;
+  allowed_origin_hosts?: string[] | string;
+  require_browser_headers?: boolean;
+  block_empty_user_agent?: boolean;
+}
+
 export interface AiCopyResult {
   provider: "xiaomi" | "local_template";
   mode: string;
@@ -97,6 +112,8 @@ export interface CreatorStore {
   saveLlmSettings(input: LlmSettingsInput): Promise<LlmSettings>;
   getRateLimitSettings(): Promise<RateLimitSettings>;
   saveRateLimitSettings(input: RateLimitSettingsInput): Promise<RateLimitSettings>;
+  getSecuritySettings(): Promise<SecuritySettings>;
+  saveSecuritySettings(input: SecuritySettingsInput): Promise<SecuritySettings>;
   recordUsage(input: UsageLogInput): Promise<void>;
   recordAudit(input: AuditLogInput): Promise<void>;
   getMetrics(): Promise<Record<string, number>>;
@@ -120,6 +137,13 @@ export const DEFAULT_RATE_LIMIT_SETTINGS: Omit<RateLimitSettings, "updated_at"> 
   batch_per_hour: 30,
   ai_per_day: 1000,
   comments_per_day: 200,
+};
+
+export const DEFAULT_SECURITY_SETTINGS: Omit<SecuritySettings, "updated_at"> = {
+  blocked_ips: [],
+  allowed_origin_hosts: [],
+  require_browser_headers: false,
+  block_empty_user_agent: false,
 };
 
 let creatorSingleton: Promise<CreatorStore> | null = null;
@@ -257,6 +281,7 @@ export async function testLlmSettings(input: LlmSettingsInput, store?: CreatorSt
 class MemoryCreatorStore implements CreatorStore {
   private settings = { ...DEFAULT_LLM_SETTINGS, updated_at: null } as LlmSettings;
   private rateLimits = { ...DEFAULT_RATE_LIMIT_SETTINGS, updated_at: null } as RateLimitSettings;
+  private security = { ...DEFAULT_SECURITY_SETTINGS, updated_at: null } as SecuritySettings;
   private apiKey: string | null = null;
   private usage: UsageLogEntry[] = [];
   private audits: AuditLogEntry[] = [];
@@ -280,6 +305,13 @@ class MemoryCreatorStore implements CreatorStore {
   async saveRateLimitSettings(input: RateLimitSettingsInput): Promise<RateLimitSettings> {
     this.rateLimits = normalizeRateLimitSettings(input, this.rateLimits);
     return this.getRateLimitSettings();
+  }
+  async getSecuritySettings(): Promise<SecuritySettings> {
+    return { ...this.security, blocked_ips: [...this.security.blocked_ips], allowed_origin_hosts: [...this.security.allowed_origin_hosts] };
+  }
+  async saveSecuritySettings(input: SecuritySettingsInput): Promise<SecuritySettings> {
+    this.security = normalizeSecuritySettings(input, this.security);
+    return this.getSecuritySettings();
   }
   async recordUsage(input: UsageLogInput): Promise<void> {
     const created_at = Date.now();
@@ -352,6 +384,18 @@ class SqliteCreatorStore implements CreatorStore {
     const current = await this.getRateLimitSettings();
     const settings = normalizeRateLimitSettings(input, current);
     this.writeJson("rate_limit_settings", settings);
+    return settings;
+  }
+
+  async getSecuritySettings(): Promise<SecuritySettings> {
+    const raw = this.readJson("security_settings");
+    return normalizeSecuritySettings(raw, { ...DEFAULT_SECURITY_SETTINGS, updated_at: null }, false);
+  }
+
+  async saveSecuritySettings(input: SecuritySettingsInput): Promise<SecuritySettings> {
+    const current = await this.getSecuritySettings();
+    const settings = normalizeSecuritySettings(input, current);
+    this.writeJson("security_settings", settings);
     return settings;
   }
 
@@ -468,6 +512,17 @@ function normalizeRateLimitSettings(input: RateLimitSettingsInput | Record<strin
   };
 }
 
+function normalizeSecuritySettings(input: SecuritySettingsInput | Record<string, unknown>, current: SecuritySettings, touch = true): SecuritySettings {
+  const record = input as Record<string, unknown>;
+  return {
+    blocked_ips: record.blocked_ips === undefined ? [...current.blocked_ips] : normalizeStringList(record.blocked_ips),
+    allowed_origin_hosts: record.allowed_origin_hosts === undefined ? [...current.allowed_origin_hosts] : normalizeStringList(record.allowed_origin_hosts).map(normalizeHostEntry).filter(Boolean),
+    require_browser_headers: typeof record.require_browser_headers === "boolean" ? record.require_browser_headers : current.require_browser_headers,
+    block_empty_user_agent: typeof record.block_empty_user_agent === "boolean" ? record.block_empty_user_agent : current.block_empty_user_agent,
+    updated_at: touch ? new Date().toISOString() : (asString(record.updated_at) ?? current.updated_at ?? null),
+  };
+}
+
 async function callOpenAiCompatible(options: {
   settings: LlmSettings;
   apiKey: string;
@@ -544,6 +599,21 @@ function clampRate(value: unknown, fallback: number, min: number, max: number): 
   const number = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
   if (!Number.isFinite(number)) return Math.max(min, Math.min(max, Math.floor(fallback)));
   return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+function normalizeStringList(value: unknown): string[] {
+  const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[\n,，\s]+/g) : [];
+  return [...new Set(raw.map((item) => String(item).trim()).filter(Boolean))].slice(0, 500);
+}
+
+function normalizeHostEntry(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return "";
+  try {
+    return new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname;
+  } catch {
+    return trimmed.replace(/^https?:\/\//, "").split("/")[0]?.trim() ?? "";
+  }
 }
 
 function normalizeListLimit(value: unknown): number {

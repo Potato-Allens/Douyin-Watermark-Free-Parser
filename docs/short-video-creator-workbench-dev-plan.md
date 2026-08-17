@@ -54,6 +54,7 @@
 - 新增 `/favicon.ico` 兼容路由，减少浏览器默认图标 404。
 - 后台登录失败锁定已落地：默认同 IP + 用户名 15 分钟内失败 5 次后锁定 15 分钟，并写入 `admin_login_failed` / `admin_login_locked` 审计日志；可通过 `ADMIN_LOGIN_MAX_FAILURES`、`ADMIN_LOGIN_WINDOW_MINUTES`、`ADMIN_LOGIN_LOCK_MINUTES` 调整。
 - 后台限流配置已落地：`GET/POST /api/admin/rate-limits` 支持配置单条解析、媒体代理、批量任务、AI 调用和评论采集额度，并写入 `rate_limits_save` 审计日志；后台页面已加入“接口限流”配置卡片。
+- 后台安全策略已落地：`GET/POST /api/admin/security`、`POST /api/admin/block-ip` 支持 IP 黑名单、Origin/Referer 白名单、浏览器来源头检查和空 User-Agent 拦截，命中后写入 `security_blocked_request` 审计日志。
 
 ## 2. 本次确认后的新增需求
 
@@ -586,6 +587,8 @@ POST /api/admin/settings/llm/test
 POST /api/admin/settings/llm
 GET  /api/admin/rate-limits
 POST /api/admin/rate-limits
+GET  /api/admin/security
+POST /api/admin/security
 POST /api/admin/block-ip
 ```
 

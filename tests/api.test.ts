@@ -59,6 +59,8 @@ describe("api routes", () => {
     expect(html).toContain("抖映灵感台后台");
     expect(html).toContain("接口限流");
     expect(html).toContain("/api/admin/rate-limits");
+    expect(html).toContain("安全策略");
+    expect(html).toContain("/api/admin/security");
     expect(html).not.toContain("瑙ｆ瀽");
   });
 
@@ -321,6 +323,55 @@ describe("api routes", () => {
       const audit = await app.request("/api/admin/audit-logs?limit=5", { headers: { authorization: "Bearer rate-admin-token" } });
       const auditBody = await audit.json();
       expect(auditBody.data.some((entry: any) => entry.action === "rate_limits_save")).toBe(true);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+    }
+  });
+
+  it("lets admin configure security policies and blocks abusive public requests", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = "security-admin-token";
+    try {
+      const creatorStore = createMemoryCreatorStore();
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), cacheTtlMs: 0, creatorStore });
+      const adminHeaders = { authorization: "Bearer security-admin-token", "content-type": "application/json" };
+
+      const saved = await app.request("/api/admin/security", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({
+          blocked_ips: ["203.0.113.9"],
+          allowed_origin_hosts: ["dy.devforai.cn"],
+          require_browser_headers: true,
+          block_empty_user_agent: false,
+        }),
+      });
+      const savedBody = await saved.json();
+      expect(saved.status).toBe(200);
+      expect(savedBody.data.blocked_ips).toEqual(["203.0.113.9"]);
+      expect(savedBody.data.allowed_origin_hosts).toEqual(["dy.devforai.cn"]);
+
+      const blockedIp = await app.request(`/api/v1/parse?url=${encodedUrl}`, {
+        headers: { "x-forwarded-for": "203.0.113.9", origin: "https://dy.devforai.cn" },
+      });
+      const missingOrigin = await app.request(`/api/v1/parse?url=${encodedUrl}`, {
+        headers: { "x-forwarded-for": "203.0.113.10" },
+      });
+      const allowed = await app.request(`/api/v1/parse?url=${encodedUrl}`, {
+        headers: { "x-forwarded-for": "203.0.113.10", origin: "https://dy.devforai.cn" },
+      });
+
+      expect(blockedIp.status).toBe(403);
+      expect((await blockedIp.json()).error.detail).toContain("blocked_ip");
+      expect(missingOrigin.status).toBe(403);
+      expect((await missingOrigin.json()).error.detail).toContain("missing_origin_or_referer");
+      expect(allowed.status).toBe(200);
+
+      const audit = await app.request("/api/admin/audit-logs?limit=10", { headers: { authorization: "Bearer security-admin-token" } });
+      const auditBody = await audit.json();
+      expect(auditBody.data.some((entry: any) => entry.action === "security_settings_save")).toBe(true);
+      expect(auditBody.data.some((entry: any) => entry.action === "security_blocked_request" && entry.detail.includes("blocked_ip"))).toBe(true);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;

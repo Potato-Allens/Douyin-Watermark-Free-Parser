@@ -18,7 +18,7 @@ import {
   testLlmSettings,
   toServiceError,
 } from "./core/index.ts";
-import type { ApiSuccessResponse, BatchComment, BatchItem, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, VipSession, VipStore } from "./core/index.ts";
+import type { ApiSuccessResponse, BatchComment, BatchItem, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, SecuritySettings, VipSession, VipStore } from "./core/index.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import { renderDesignsPage } from "./designs-ui.ts";
 import { renderHomePage } from "./ui.ts";
@@ -124,6 +124,27 @@ export function createApp(options: CreateAppOptions = {}) {
     };
   };
 
+  const getEffectiveSecuritySettings = async () => (await creatorStorePromise).getSecuritySettings();
+
+  const guardPublicAccess = async (c: Context, kind: string) => {
+    const settings = await getEffectiveSecuritySettings();
+    const reason = securityDenyReason(c, settings);
+    if (!reason) return;
+    const ip = getClientIp(c);
+    const path = new URL(c.req.url).pathname;
+    const detail = JSON.stringify({
+      kind,
+      path,
+      reason,
+      origin: c.req.header("origin") ?? null,
+      referer: c.req.header("referer") ?? null,
+      user_agent: c.req.header("user-agent") ?? null,
+    });
+    await recordUsage({ kind: `blocked_${kind}`, ip, path, status: 403, detail });
+    await (await creatorStorePromise).recordAudit({ actor: "system", action: "security_blocked_request", ip, detail });
+    throw new DouyinServiceError("UNSUPPORTED_CONTENT", `request blocked by security policy: ${reason}`, 403);
+  };
+
   const cleanupOnlineSessions = () => {
     const now = Date.now();
     for (const [id, expiresAt] of onlineSessions.entries()) {
@@ -165,7 +186,10 @@ export function createApp(options: CreateAppOptions = {}) {
     const requestUrl = new URL(c.req.url);
     if (!requestUrl.searchParams.has("url")) return c.html(renderHomePage());
     return handleCompat(c.req.url, parseForRequest, {
-      before: async () => enforcePublicRateLimit("compat_parse", c, (await getEffectiveRateLimits()).parse_per_minute),
+      before: async () => {
+        await guardPublicAccess(c, "compat_parse");
+        enforcePublicRateLimit("compat_parse", c, (await getEffectiveRateLimits()).parse_per_minute);
+      },
       after: (status, detail) => recordUsage({ kind: "compat_parse", ip: getClientIp(c), path: "/", status, detail }),
     });
   });
@@ -176,7 +200,10 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/hello", async (c) => {
     return handleCompat(c.req.url, parseForRequest, {
-      before: async () => enforcePublicRateLimit("compat_parse", c, (await getEffectiveRateLimits()).parse_per_minute),
+      before: async () => {
+        await guardPublicAccess(c, "compat_parse");
+        enforcePublicRateLimit("compat_parse", c, (await getEffectiveRateLimits()).parse_per_minute);
+      },
       after: (status, detail) => recordUsage({ kind: "compat_parse", ip: getClientIp(c), path: "/api/hello", status, detail }),
     });
   });
@@ -190,6 +217,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     try {
+      await guardPublicAccess(c, "parse");
       enforcePublicRateLimit("parse", c, (await getEffectiveRateLimits()).parse_per_minute);
       const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
       await recordUsage({ kind: "parse", ip: getClientIp(c), path: "/api/v1/parse", status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, type: parsed.media.type }) });
@@ -208,6 +236,7 @@ export function createApp(options: CreateAppOptions = {}) {
       return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
     }
     try {
+      await guardPublicAccess(c, "media_proxy");
       enforcePublicRateLimit("media_proxy", c, (await getEffectiveRateLimits()).media_per_minute);
       const response = await proxyMediaUrl(mediaUrl, c.req.raw, "inline", requestUrl.searchParams.get("filename"));
       await recordUsage({ kind: "media_proxy", ip: getClientIp(c), path: "/api/v1/media", status: response.status, detail: safeUsageUrlDetail(mediaUrl) });
@@ -226,6 +255,7 @@ export function createApp(options: CreateAppOptions = {}) {
       return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
     }
     try {
+      await guardPublicAccess(c, "download_proxy");
       enforcePublicRateLimit("download_proxy", c, (await getEffectiveRateLimits()).media_per_minute);
       const response = await proxyMediaUrl(mediaUrl, c.req.raw, "attachment", requestUrl.searchParams.get("filename"));
       await recordUsage({ kind: "download_proxy", ip: getClientIp(c), path: "/api/v1/download", status: response.status, detail: safeUsageUrlDetail(mediaUrl) });
@@ -362,6 +392,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/v1/batch/inspect", async (c) => {
     let sessionKey = "unknown";
     try {
+      await guardPublicAccess(c, "batch_inspect");
       const session = await requireVip(c, await getStore());
       sessionKey = session.code;
       const body = await readJsonBody(c);
@@ -381,6 +412,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/v1/profile/preview", async (c) => {
     let sessionKey = "unknown";
     try {
+      await guardPublicAccess(c, "profile_preview");
       const session = await requireVip(c, await getStore());
       sessionKey = session.code;
       const body = await readJsonBody(c);
@@ -423,6 +455,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/v1/batch/start", async (c) => {
     let sessionKey = "unknown";
     try {
+      await guardPublicAccess(c, "batch_start");
       const session = await requireVip(c, await getStore());
       sessionKey = session.code;
       const body = await readJsonBody(c);
@@ -455,6 +488,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/batch/:id", async (c) => {
     try {
+      await guardPublicAccess(c, "batch_status");
       await requireVip(c, await getStore());
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
@@ -466,6 +500,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/batch/queue/status", async (c) => {
     try {
+      await guardPublicAccess(c, "batch_queue");
       await requireVip(c, await getStore());
       return c.json(success(await getBatchQueueSnapshot()));
     } catch (error) {
@@ -476,6 +511,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/v1/batch/:id/ai", async (c) => {
     const store = await creatorStorePromise;
     try {
+      await guardPublicAccess(c, "batch_ai");
       const session = await requireVip(c, await getStore());
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
@@ -508,6 +544,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/batch/:id/export", async (c) => {
     try {
+      await guardPublicAccess(c, "batch_export");
       const session = await requireVip(c, await getStore());
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
@@ -527,6 +564,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/batch/:id/comments", async (c) => {
     try {
+      await guardPublicAccess(c, "batch_comments");
       const session = await requireVip(c, await getStore());
       if (isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
@@ -544,6 +582,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/api/v1/batch/:id/comments/import", async (c) => {
     try {
+      await guardPublicAccess(c, "batch_comments_import");
       const session = await requireVip(c, await getStore());
       if (isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment import/export", 403);
@@ -573,6 +612,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/v1/ai/script", async (c) => {
     const store = await creatorStorePromise;
     try {
+      await guardPublicAccess(c, "ai_script");
       const session = await requireVip(c, await getStore());
       const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
       if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
@@ -595,6 +635,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/v1/comments", async (c) => {
     const store = await creatorStorePromise;
     try {
+      await guardPublicAccess(c, "comments_fetch");
       const session = await requireVip(c, await getStore());
       if (isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
@@ -739,6 +780,49 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/admin/security", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      return c.json(success(await (await creatorStorePromise).getSecuritySettings()));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/security", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions);
+      const body = await readJsonBody(c);
+      const data = await store.saveSecuritySettings({
+        blocked_ips: (body.blocked_ips as string[] | string | undefined) ?? undefined,
+        allowed_origin_hosts: (body.allowed_origin_hosts as string[] | string | undefined) ?? undefined,
+        require_browser_headers: typeof body.require_browser_headers === "boolean" ? body.require_browser_headers : undefined,
+        block_empty_user_agent: typeof body.block_empty_user_agent === "boolean" ? body.block_empty_user_agent : undefined,
+      });
+      await store.recordAudit({ actor: "admin", action: "security_settings_save", ip: getClientIp(c), detail: JSON.stringify(data) });
+      return c.json(success(data));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/block-ip", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions);
+      const body = await readJsonBody(c);
+      const ip = asString(body.ip);
+      if (!ip) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "ip is required", 400);
+      const current = await store.getSecuritySettings();
+      const data = await store.saveSecuritySettings({ blocked_ips: [...new Set([...current.blocked_ips, ip])] });
+      await store.recordAudit({ actor: "admin", action: "security_block_ip", ip: getClientIp(c), detail: JSON.stringify({ blocked_ip: ip, reason: asString(body.reason), blocked_count: data.blocked_ips.length }) });
+      return c.json(success(data));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/admin/metrics", async (c) => {
     try {
       requireAdmin(c, adminSessions);
@@ -751,6 +835,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/v1/batch/:id/comments/collect", async (c) => {
     const store = await creatorStorePromise;
     try {
+      await guardPublicAccess(c, "batch_comments_collect");
       const session = await requireVip(c, await getStore());
       if (isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment collection", 403);
@@ -1332,6 +1417,34 @@ function buildAdminCookie(token: string, maxAge: number, requestUrl: string): st
 
 function getClientIp(c: Context): string {
   return firstForwardedHeader(c.req.header("x-forwarded-for")) ?? c.req.header("x-real-ip") ?? "0.0.0.0";
+}
+
+function securityDenyReason(c: Context, settings: SecuritySettings): string | null {
+  const ip = getClientIp(c);
+  if (settings.blocked_ips.includes(ip)) return "blocked_ip";
+  const userAgent = c.req.header("user-agent")?.trim() ?? "";
+  if (settings.block_empty_user_agent && !userAgent) return "empty_user_agent";
+  const allowedHosts = settings.allowed_origin_hosts.map((host) => host.toLowerCase()).filter(Boolean);
+  if (!allowedHosts.length) return null;
+  const originHost = headerUrlHost(c.req.header("origin"));
+  const refererHost = headerUrlHost(c.req.header("referer"));
+  if (!originHost && !refererHost) return settings.require_browser_headers ? "missing_origin_or_referer" : null;
+  if ((originHost && isAllowedOriginHost(originHost, allowedHosts)) || (refererHost && isAllowedOriginHost(refererHost, allowedHosts))) return null;
+  return "origin_or_referer_not_allowed";
+}
+
+function headerUrlHost(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedOriginHost(host: string, allowedHosts: string[]): boolean {
+  const normalized = host.toLowerCase();
+  return allowedHosts.some((allowed) => normalized === allowed || (allowed.startsWith("*.") && normalized.endsWith(allowed.slice(1))));
 }
 
 function enforceRateLimit(buckets: Map<string, { resetAt: number; count: number }>, key: string, limit: number, windowMs: number, cost = 1): void {

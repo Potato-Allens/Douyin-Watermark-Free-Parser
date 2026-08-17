@@ -16,6 +16,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
 - Admin console `/admin` with password + optional Google Authenticator/TOTP, model config, plan config, activation codes, metrics, usage logs, and audit logs.
 - Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
+- Admin security policies: IP blacklist, optional Origin/Referer allowlist, browser-header checks, and blocked-request audit logs.
 
 ## Quick Start
 
@@ -155,6 +156,9 @@ GET  /api/admin/usage
 GET  /api/admin/audit-logs
 GET  /api/admin/rate-limits
 POST /api/admin/rate-limits
+GET  /api/admin/security
+POST /api/admin/security
+POST /api/admin/block-ip
 GET  /api/admin/plans
 POST /api/admin/plans
 GET  /api/admin/codes
