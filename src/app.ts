@@ -54,7 +54,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const batchRateLimit = parsePositiveInt(getRuntimeEnv().BATCH_RATE_LIMIT_PER_HOUR, 30);
   const adminLoginMaxFailures = parsePositiveInt(getRuntimeEnv().ADMIN_LOGIN_MAX_FAILURES, 5);
   const adminLoginWindowMs = parsePositiveInt(getRuntimeEnv().ADMIN_LOGIN_WINDOW_MINUTES, 15) * 60 * 1000;
-  const adminLoginLockMs = parsePositiveInt(getRuntimeEnv().ADMIN_LOGIN_LOCK_MINUTES, 10) * 60 * 1000;
+  const adminLoginLockMs = parsePositiveInt(getRuntimeEnv().ADMIN_LOGIN_LOCK_MINUTES, 15) * 60 * 1000;
 
   const recordUsage = async (input: { kind: string; user_key?: string; ip: string; path: string; status: number; detail?: string | null }) => {
     try {

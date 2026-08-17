@@ -1,8 +1,8 @@
-# 部署文档
+# Deployment Guide
 
-目标域名示例：`dy.devforai.cn`
+This project can run as a lightweight Node service behind Nginx. The examples below use `dy.devforai.cn`.
 
-## 1. 本地检查
+## 1. Local Verification
 
 ```bash
 pnpm install
@@ -11,9 +11,71 @@ pnpm build
 pnpm smoke:node
 ```
 
-## 2. Docker 部署
+## 2. Environment Variables
 
-服务器安装 Docker 后执行：
+Create a `.env` file or configure these variables in your process manager:
+
+```bash
+PORT=8000
+DATABASE_URL=/app/.data/app.db
+VIP_INIT_CODES=CODE-A,CODE-B
+VIP_SESSION_DAYS=30
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-this-password
+ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
+ONLINE_BASE_COUNT=0
+PARSE_RATE_LIMIT_PER_MINUTE=60
+MEDIA_RATE_LIMIT_PER_MINUTE=120
+BATCH_RATE_LIMIT_PER_HOUR=30
+ADMIN_LOGIN_MAX_FAILURES=5
+ADMIN_LOGIN_WINDOW_MINUTES=15
+ADMIN_LOGIN_LOCK_MINUTES=15
+```
+
+`ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty, only username/password is checked.
+
+## 3. Node/systemd Deployment
+
+```bash
+git clone https://github.com/Potato-Allens/Douyin-Watermark-Free-Parser.git /www/wwwroot/dy.devforai.cn
+cd /www/wwwroot/dy.devforai.cn
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+Create `/etc/systemd/system/douyin-parser.service`:
+
+```ini
+[Unit]
+Description=Douyin Watermark-Free Parser
+After=network.target
+
+[Service]
+WorkingDirectory=/www/wwwroot/dy.devforai.cn
+Environment=PORT=8000
+Environment=DATABASE_URL=/www/wwwroot/dy.devforai.cn/.data/app.db
+Environment=ONLINE_BASE_COUNT=0
+Environment=ADMIN_USERNAME=admin
+Environment=ADMIN_PASSWORD=change-this-password
+Environment=ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
+ExecStart=/usr/local/bin/pnpm start
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now douyin-parser
+sudo systemctl status douyin-parser
+curl http://127.0.0.1:8000/healthz
+```
+
+## 4. Docker Deployment
 
 ```bash
 git clone https://github.com/Potato-Allens/Douyin-Watermark-Free-Parser.git /opt/douyin-parser
@@ -27,23 +89,25 @@ docker run -d \
   -p 127.0.0.1:8000:8000 \
   -e PORT=8000 \
   -e DATABASE_URL=/app/.data/app.db \
-  -e VIP_INIT_CODES="请改成你的激活码1,请改成你的激活码2" \
-  -e VIP_SESSION_DAYS=30 \
+  -e VIP_INIT_CODES="CODE-A,CODE-B" \
+  -e ADMIN_USERNAME=admin \
+  -e ADMIN_PASSWORD="change-this-password" \
+  -e ADMIN_TOTP_SECRET="BASE32_TOTP_SECRET" \
+  -e ONLINE_BASE_COUNT=0 \
   douyin-parser
 ```
 
-检查：
+Verify:
 
 ```bash
 curl http://127.0.0.1:8000/healthz
 ```
 
-## 3. Nginx 绑定域名
+## 5. Nginx Reverse Proxy
 
-创建配置：
+Create a site config for `dy.devforai.cn`:
 
-```bash
-sudo tee /etc/nginx/sites-available/dy.devforai.cn >/dev/null <<'EOF'
+```nginx
 server {
   listen 80;
   server_name dy.devforai.cn;
@@ -62,75 +126,39 @@ server {
     proxy_buffering off;
   }
 }
-EOF
+```
 
-sudo ln -sf /etc/nginx/sites-available/dy.devforai.cn /etc/nginx/sites-enabled/dy.devforai.cn
+Reload Nginx:
+
+```bash
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-浏览器访问：
+## 6. HTTPS
 
-```text
-http://dy.devforai.cn
-```
-
-## 4. HTTPS
-
-如果服务器已安装 Certbot：
+If Certbot is installed:
 
 ```bash
 sudo certbot --nginx -d dy.devforai.cn
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
-HTTPS 完成后访问：
+If using a hosting panel, create an SSL certificate in the panel and keep the reverse proxy target as `http://127.0.0.1:8000`.
 
-```text
-https://dy.devforai.cn
-```
-
-## 5. 更新版本
+## 7. Smoke Checks
 
 ```bash
-cd /opt/douyin-parser
-git pull
-docker build -t douyin-parser .
-docker rm -f douyin-parser 2>/dev/null || true
-docker run -d \
-  --name douyin-parser \
-  --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 \
-  -e PORT=8000 \
-  -e DATABASE_URL=/app/.data/app.db \
-  -e VIP_INIT_CODES="请改成你的激活码1,请改成你的激活码2" \
-  -e VIP_SESSION_DAYS=30 \
-  douyin-parser
+curl -i https://dy.devforai.cn/healthz
+curl -i https://dy.devforai.cn/favicon.svg
+curl -i "https://dy.devforai.cn/api/v1/parse"
+curl -i https://dy.devforai.cn/designs
 ```
 
-## 6. 常用接口检查
+Expected:
 
-```bash
-curl "https://dy.devforai.cn/api/v1/parse?url=https://v.douyin.com/xxxx/"
-curl "https://dy.devforai.cn/api/v1/online"
-curl -X POST "https://dy.devforai.cn/api/v1/vip/activate" \
-  -H "Content-Type: application/json" \
-  -d '{"code":"你的激活码"}'
-```
-
-## 7. 环境变量
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `PORT` | `8000` | 服务监听端口 |
-| `DATABASE_URL` | `.data/app.db` | 会员激活码 SQLite 数据库路径 |
-| `VIP_INIT_CODES` | `VIP-DEMO-2026` | 初始激活码，逗号分隔 |
-| `VIP_SESSION_DAYS` | `30` | 会员会话有效天数 |
-| `ONLINE_BASE_COUNT` | `0` | 在线人数基础值，建议保持 `0` 展示真实活跃人数 |
-
-## 8. 页面功能
-
-- 首页：输入或粘贴抖音分享链接。
-- 自动识别：点击“启用剪贴板识别”后，复制链接会自动填入并解析。
-- 预览：解析后使用同源代理播放视频。
-- 下载：解析成功后自动下载，也可点击“下载视频”。
-- 批量：激活会员后，输入主页链接，先获取数量，再输入下载数量和并发数。
+- `/healthz` returns `200 OK`.
+- `/api/v1/parse` without `url` returns `400` with `MISSING_URL`.
+- `/designs` shows Scheme A selected.
+- `/admin` opens the admin login page.

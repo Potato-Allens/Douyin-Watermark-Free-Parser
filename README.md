@@ -1,78 +1,72 @@
 # Douyin Watermark-Free Parser
 
-抖音单条视频/图文解析服务，内置抖音风格 Web UI、规范 API、兼容接口、视频预览代理、下载代理、真实在线人数、会员激活与主页批量解析任务。
+A lightweight Douyin parsing service with a Douyin-style creator workspace, normalized API, compatibility API, media preview proxy, download proxy, member activation, batch profile parsing, comments collection, AI copywriting, and an admin console.
 
-## 功能
+## Features
 
-- 单条解析：粘贴抖音分享文本、短链或详情页链接，自动解析无水印视频地址。
-- 自动预览：前端使用同源 `/api/v1/media` 代理播放，解决部分直链浏览器不能播放的问题。
-- 自动下载：解析成功后可自动触发 `/api/v1/download` 下载。
-- 作品信息：返回标题/介绍、作者、点赞、评论、转发、收藏、封面、背景音乐。
-- 图文解析：返回去重后的图片列表。
-- 会员批量：激活码激活后，可输入主页链接，先获取作品数量，再按数量和并发数创建批量解析任务。
-- 真实在线：默认基础人数为 `0`，页面只展示活跃浏览器心跳统计。
-- 抖映灵感台：前台以视频预览为中心，链接识别、作品信息、AI 文案、批量任务都围绕当前视频展开。
-- 会员账号：激活码创建账号密码，后续登录自动同步套餐权益。
-- AI 文案：支持小米大模型 OpenAI-compatible 配置；未配置时回退本地模板。
-- 轻量后台：`/admin` 提供管理员登录、Google Authenticator 六位码、模型配置、套餐配置、激活码与调用指标。
-- 多运行时：Node/Docker、Vercel、Cloudflare Workers、Deno Deploy。
+- Single video/image parse from Douyin share text, short links, or detail URLs.
+- Watermark-free playback URL plus same-origin `/api/v1/media` preview and `/api/v1/download` download proxy.
+- Frontend workspace `抖映灵感台`; Scheme A is selected, with the video preview centered and operations around it.
+- Automatic paste/clipboard recognition for Douyin links.
+- Metadata parsing: title, description, author, likes, comments, shares, collects, cover, and background music.
+- Real online count only; default `ONLINE_BASE_COUNT=0`.
+- Member activation-code registration, account/password login, plan permissions, queue priority, and batch privileges.
+- Profile works preview, batch parse queue, persistent task progress, and JSON/text/cover/comment export.
+- Single and batch comments collection/import/export.
+- Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
+- Admin console `/admin` with password + optional Google Authenticator/TOTP, model config, plan config, activation codes, metrics, usage logs, and audit logs.
+- Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
 
-## 快速启动
+## Quick Start
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-访问：
+Open:
 
 ```text
 http://localhost:8000
 ```
 
-## Web UI
+Run checks:
 
-打开首页后，直接粘贴抖音分享链接即可自动识别：
-
-```text
-https://v.douyin.com/xxxx/
+```bash
+pnpm test
+pnpm build
+pnpm smoke:node
 ```
 
-页面会自动展示：
+## Pages
 
-- 视频预览
-- 下载按钮
-- 点赞/评论/转发/收藏
-- 标题/介绍
-- 背景音乐
-- 封面
-- 真实在线人数
-- 会员批量解析入口
+| Page | Description |
+| --- | --- |
+| `/` | Main parsing and creator workspace |
+| `/designs` | Interface scheme preview page; Scheme A is selected |
+| `/admin` | Admin console |
+| `/healthz` | Health check |
+| `/favicon.svg`, `/favicon.ico` | Site icon |
 
-## API
-
-### 兼容接口
+## Compatibility API
 
 ```http
 GET /?url=<douyin-url>
-```
-
-返回 `text/plain` 无水印视频直链。
-
-```http
 GET /?data&url=<douyin-url>
+GET /api/hello?url=<douyin-url>
 GET /api/hello?data&url=<douyin-url>
 ```
 
-返回兼容 JSON。
+- `GET /?url=` returns `text/plain` no-watermark playback URL.
+- `GET /?data&url=` returns bare compatibility JSON.
 
-### 规范接口
+## Normalized API
 
 ```http
 GET /api/v1/parse?url=<douyin-url>
 ```
 
-成功响应：
+All response fields are stable. Missing scalar fields return `null`; list fields return arrays.
 
 ```json
 {
@@ -92,7 +86,7 @@ GET /api/v1/parse?url=<douyin-url>
 }
 ```
 
-错误响应：
+Error responses use:
 
 ```json
 {
@@ -103,71 +97,43 @@ GET /api/v1/parse?url=<douyin-url>
 }
 ```
 
-固定错误码：
-
-- `MISSING_URL`
-- `INVALID_URL`
-- `FETCH_FAILED`
-- `PARSE_FAILED`
-- `UNSUPPORTED_CONTENT`
-- `INTERNAL_ERROR`
-
-### 预览/下载代理
-
-```http
-GET /api/v1/media?url=<video-url>
-GET /api/v1/download?url=<video-url>&filename=douyin.mp4
-```
-
-- `/media`：同源预览，支持 Range。
-- `/download`：附件下载，自动设置文件名。
-
-### 真实在线人数
-
-```http
-GET /api/v1/online
-POST /api/v1/online/ping
-```
-
-`POST /api/v1/online/ping` 示例：
-
-```json
-{ "client_id": "browser-session-id" }
-```
-
-### 会员激活
-
-默认初始激活码：
+Fixed error codes:
 
 ```text
-VIP-DEMO-2026
+MISSING_URL, INVALID_URL, FETCH_FAILED, PARSE_FAILED, UNSUPPORTED_CONTENT, INTERNAL_ERROR
 ```
 
-生产环境请通过环境变量覆盖：
-
-```bash
-VIP_INIT_CODES="CODE-A,CODE-B,CODE-C"
-VIP_SESSION_DAYS=30
-DATABASE_URL=".data/app.db"
-```
-
-激活：
+## Media Proxy
 
 ```http
-POST /api/v1/vip/activate
-Content-Type: application/json
-
-{ "code": "CODE-A" }
+GET /api/v1/media?url=<encoded-media-url>
+GET /api/v1/download?url=<encoded-media-url>&filename=<name.mp4>
 ```
 
-状态：
+The proxy keeps playback/download same-origin and supports HTTP range requests.
+
+## Member and Batch APIs
 
 ```http
-GET /api/v1/vip/status
-Authorization: Bearer <vip-token>
+GET  /api/v1/plans
+POST /api/v1/auth/register
+POST /api/v1/auth/login
+POST /api/v1/auth/logout
+GET  /api/v1/me
+POST /api/v1/batch/inspect
+POST /api/v1/profile/preview
+POST /api/v1/batch/start
+GET  /api/v1/batch/queue/status
+GET  /api/v1/batch/:id
+POST /api/v1/batch/:id/ai
+GET  /api/v1/batch/:id/export?type=json|scripts|covers|comments
+GET  /api/v1/comments?aweme_id=<id>&count=20
+GET  /api/v1/batch/:id/comments
+POST /api/v1/batch/:id/comments/import
+POST /api/v1/batch/:id/comments/collect
 ```
 
-账号激活注册：
+Registration example:
 
 ```http
 POST /api/v1/auth/register
@@ -176,142 +142,55 @@ Content-Type: application/json
 { "code": "CODE-A", "username": "creator", "password": "password123" }
 ```
 
-账号登录 / 当前用户 / 套餐列表：
+## Admin APIs
 
 ```http
-POST /api/v1/auth/login
-GET /api/v1/me
-GET /api/v1/plans
-```
-
-后台管理：
-
-```http
-GET /admin
+GET  /admin
 POST /api/admin/login
-GET/POST /api/admin/settings/llm
-GET/POST /api/admin/plans
-GET/POST /api/admin/codes
-GET /api/admin/metrics
+GET  /api/admin/settings/llm
+POST /api/admin/settings/llm
+POST /api/admin/settings/llm/test
+GET  /api/admin/metrics
+GET  /api/admin/usage
+GET  /api/admin/audit-logs
+GET  /api/admin/plans
+POST /api/admin/plans
+GET  /api/admin/codes
+POST /api/admin/codes
 ```
 
-### 会员批量解析
+Admin login supports username/password plus optional Google Authenticator/TOTP. Failed login attempts are locked by IP + username.
 
-获取主页作品数量：
+## Environment Variables
 
-```http
-POST /api/v1/batch/inspect
-Authorization: Bearer <vip-token>
-Content-Type: application/json
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `8000` | Node server listen port |
+| `DATABASE_URL` | `.data/app.db` | SQLite database path in Node |
+| `VIP_INIT_CODES` | `VIP-DEMO-2026` | Initial activation codes, comma-separated |
+| `VIP_SESSION_DAYS` | `30` | Member session days |
+| `ADMIN_USERNAME` | `admin` | Admin username |
+| `ADMIN_PASSWORD` | empty | Admin password; required for `/api/admin/login` |
+| `ADMIN_TOTP_SECRET` | empty | Base32 TOTP secret for Google Authenticator |
+| `ADMIN_TOKEN` | empty | Optional direct admin bearer token for server-side operation |
+| `ADMIN_LOGIN_MAX_FAILURES` | `5` | Failed admin login attempts before lockout |
+| `ADMIN_LOGIN_WINDOW_MINUTES` | `15` | Failure counting window |
+| `ADMIN_LOGIN_LOCK_MINUTES` | `15` | Lockout duration |
+| `ONLINE_BASE_COUNT` | `0` | Real online count base |
+| `PARSE_RATE_LIMIT_PER_MINUTE` | `60` | Public parse limit per IP |
+| `MEDIA_RATE_LIMIT_PER_MINUTE` | `120` | Media/download proxy limit per IP |
+| `BATCH_RATE_LIMIT_PER_HOUR` | `30` | Batch task creation/inspection limit |
 
-{ "url": "https://www.douyin.com/user/xxxx" }
-```
+## Deployment
 
-创建批量任务：
+See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for Node/Docker/Nginx/HTTPS deployment.
 
-```http
-POST /api/v1/batch/start
-Authorization: Bearer <vip-token>
-Content-Type: application/json
-
-{
-  "url": "https://www.douyin.com/user/xxxx",
-  "count": 10,
-  "concurrency": 3
-}
-```
-
-查询任务：
-
-```http
-GET /api/v1/batch/<task-id>
-Authorization: Bearer <vip-token>
-```
-
-
-### ?? AI ?????
-
-???????????????????????????????????
-
-```http
-POST /api/v1/batch/<task-id>/ai
-Authorization: Bearer <vip-token>
-Content-Type: application/json
-
-{ "prompt": "?????????", "mode": "batch_script", "count": 20 }
-```
-
-???????
-
-```http
-GET /api/v1/batch/<task-id>/export?type=json
-GET /api/v1/batch/<task-id>/export?type=scripts
-GET /api/v1/batch/<task-id>/export?type=covers
-GET /api/v1/batch/<task-id>/export?type=comments
-```
-
-- `json`?????????????????????AI ????????
-- `scripts`?????????????? TXT?
-- `covers`????? URL JSON?
-- `comments`???????? JSON?????????????????
-- ??????? `.data/batch-tasks.json`?????????????? ID ?????
-
-## SDK
+## SDK Exports
 
 ```ts
 import { getNoWatermarkUrl, parseDouyinHtml, parseDouyinUrl } from "douyin-watermark-free-parser";
-
-const parsed = await parseDouyinUrl("https://v.douyin.com/xxxx/");
-const videoUrl = await getNoWatermarkUrl("https://v.douyin.com/xxxx/");
-const fixture = parseDouyinHtml("<html>...</html>", "https://www.douyin.com/video/xxxx");
 ```
 
-## 验证
-
-```bash
-pnpm test
-pnpm build
-pnpm smoke:node
-```
-
-## 部署
-
-新手部署请看：
-
-```text
-DEPLOYMENT.md
-```
-
-Docker 快速启动：
-
-```bash
-docker build -t douyin-parser .
-docker run -d --name douyin-parser -p 8000:8000 \
-  -e VIP_INIT_CODES="CODE-A,CODE-B" \
-  -e DATABASE_URL="/app/.data/app.db" \
-  douyin-parser
-```
-
-## 目录
-
-```text
-src/
-  app.ts              Hono 应用与 API 路由
-  ui.ts               抖音风格前端页面
-  node.ts             Node/Docker 入口
-  worker.ts           Cloudflare Workers 入口
-  deno.ts             Deno Deploy 入口
-  core/
-    parser.ts         单条解析核心
-    media-proxy.ts    视频预览/下载代理
-    profile.ts        主页作品探测
-    batch.ts          批量任务
-    vip.ts            激活码与会员会话
-    types.ts          类型定义
-    errors.ts         统一错误
-api/
-  hello.ts            Vercel 入口
-  [...path].ts        Vercel API 兜底入口
-tests/
-  *.test.ts           单元测试/API 测试
-```
+- `parseDouyinUrl(url, options?)`
+- `getNoWatermarkUrl(url, options?)`
+- `parseDouyinHtml(html, sourceUrl?)`
