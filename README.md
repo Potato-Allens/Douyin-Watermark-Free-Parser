@@ -49,7 +49,7 @@ pnpm smoke:node
 | `/designs` | Interface scheme preview page; Scheme A is selected |
 | `/admin` | Admin console |
 | `/healthz` | Health check |
-| `/favicon.svg`, `/favicon.ico` | Site icon |
+| `/favicon.svg`, `/favicon.ico`, `/app-icon.svg`, `/apple-touch-icon.svg`, `/site.webmanifest` | Site icon, mobile app icon, and web app manifest |
 
 ## Compatibility API
 

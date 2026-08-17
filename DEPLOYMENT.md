@@ -154,6 +154,7 @@ If using a hosting panel, create an SSL certificate in the panel and keep the re
 ```bash
 curl -i https://dy.devforai.cn/healthz
 curl -i https://dy.devforai.cn/favicon.svg
+curl -i https://dy.devforai.cn/site.webmanifest
 curl -i "https://dy.devforai.cn/api/v1/parse"
 curl -i https://dy.devforai.cn/designs
 ```
@@ -161,6 +162,7 @@ curl -i https://dy.devforai.cn/designs
 Expected:
 
 - `/healthz` returns `200 OK`.
+- `/site.webmanifest` returns `200 OK` with the app icon manifest.
 - `/api/v1/parse` without `url` returns `400` with `MISSING_URL`.
 - `/designs` shows Scheme A selected.
 - `/admin` opens the admin login page.

@@ -1110,6 +1110,27 @@ export function createApp(options: CreateAppOptions = {}) {
     }),
   );
 
+  app.get("/app-icon.svg", (c) =>
+    c.body(APP_ICON_SVG, 200, {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "cache-control": "public, max-age=86400",
+    }),
+  );
+
+  app.get("/apple-touch-icon.svg", (c) =>
+    c.body(APP_ICON_SVG, 200, {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "cache-control": "public, max-age=86400",
+    }),
+  );
+
+  app.get("/site.webmanifest", (c) =>
+    c.body(SITE_WEBMANIFEST, 200, {
+      "content-type": "application/manifest+json; charset=utf-8",
+      "cache-control": "public, max-age=86400",
+    }),
+  );
+
   app.get("/healthz", (c) => c.json({ ok: true, code: "OK", message: "healthy" }));
 
   return app;
@@ -2032,6 +2053,46 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"
 <path d="M58 18v38.5c0 13.8-10.3 22-22.2 22C25.2 78.5 17 72 17 62.7c0-9.9 8.6-16.1 18.9-16.1 2.3 0 4.4.3 6.1 1V18h16z" fill="url(#g)"/>
 <path d="M58 20c4.4 10.7 12.4 17.3 22 18.3v14.3c-8.4-.2-15.6-3.1-22-8.6V20z" fill="#fff" opacity=".9"/>
 </svg>`;
+
+const APP_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs>
+  <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#050506"/><stop offset=".48" stop-color="#111116"/><stop offset="1" stop-color="#050506"/></linearGradient>
+  <linearGradient id="mark" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#25f4ee"/><stop offset="1" stop-color="#fe2c55"/></linearGradient>
+  <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="24" stdDeviation="18" flood-color="#000" flood-opacity=".55"/></filter>
+</defs>
+<rect width="512" height="512" rx="128" fill="url(#bg)"/>
+<circle cx="158" cy="126" r="74" fill="#25f4ee" opacity=".18"/>
+<circle cx="368" cy="128" r="88" fill="#fe2c55" opacity=".18"/>
+<g filter="url(#shadow)">
+  <path d="M310 96v209c0 74-55 118-119 118-57 0-101-35-101-85 0-53 46-86 101-86 13 0 25 2 35 6V96h84z" fill="url(#mark)"/>
+  <path d="M310 104c24 58 67 94 119 99v76c-45-1-84-17-119-46V104z" fill="#fff" opacity=".94"/>
+</g>
+<text x="256" y="462" text-anchor="middle" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="42" font-weight="900" fill="#fff">抖映</text>
+</svg>`;
+
+const SITE_WEBMANIFEST = JSON.stringify(
+  {
+    name: "抖映灵感台",
+    short_name: "抖映",
+    description: "抖音视频解析、预览、下载、主页批量采集、评论与 AI 口播文案工作台。",
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    background_color: "#030303",
+    theme_color: "#030303",
+    icons: [
+      { src: "/favicon.svg", sizes: "96x96", type: "image/svg+xml", purpose: "any" },
+      { src: "/app-icon.svg", sizes: "512x512", type: "image/svg+xml", purpose: "any maskable" },
+      { src: "/apple-touch-icon.svg", sizes: "512x512", type: "image/svg+xml", purpose: "any" },
+    ],
+    shortcuts: [
+      { name: "开始解析", url: "/", description: "粘贴抖音分享链接并解析预览" },
+      { name: "界面方案", url: "/designs", description: "查看当前方案 A 和备选界面" },
+    ],
+  },
+  null,
+  2,
+);
 
 const app = createApp();
 

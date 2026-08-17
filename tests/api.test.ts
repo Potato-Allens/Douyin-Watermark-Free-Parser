@@ -15,6 +15,8 @@ describe("api routes", () => {
     const html = await response.text();
     expect(html).toContain("抖音视频解析");
     expect(html).toContain('id="onlineCount"');
+    expect(html).toContain('rel="manifest" href="/site.webmanifest"');
+    expect(html).toContain('rel="apple-touch-icon" href="/apple-touch-icon.svg"');
     expect(html).toContain('id="profilePreviewList"');
     expect(html).toContain('id="queuePosition"');
     expect(html).toContain('id="queuePriority"');
@@ -34,6 +36,17 @@ describe("api routes", () => {
     const icon = await app.request("/favicon.ico");
     expect(icon.status).toBe(200);
     expect(icon.headers.get("content-type")).toContain("image/svg+xml");
+
+    const manifest = await app.request("/site.webmanifest");
+    const manifestBody = await manifest.json();
+    expect(manifest.status).toBe(200);
+    expect(manifest.headers.get("content-type")).toContain("application/manifest+json");
+    expect(manifestBody.name).toBe("抖映灵感台");
+    expect(manifestBody.icons.some((item: any) => item.src === "/app-icon.svg")).toBe(true);
+
+    const appIcon = await app.request("/app-icon.svg");
+    expect(appIcon.status).toBe(200);
+    expect(appIcon.headers.get("content-type")).toContain("image/svg+xml");
   });
 
   it("keeps /api/hello compatibility message when url is missing", async () => {
@@ -51,6 +64,7 @@ describe("api routes", () => {
 
     expect(response.status).toBe(200);
     expect(html).toContain("scheme recommended");
+    expect(html).toContain('rel="manifest" href="/site.webmanifest"');
     expect(html).toContain("mock c");
     expect(html).toContain("choice");
   });
@@ -66,6 +80,7 @@ describe("api routes", () => {
     expect(html).toContain("/api/admin/security");
     expect(html).toContain("/api/admin/jobs");
     expect(html).toContain("/api/admin/users");
+    expect(html).toContain('rel="manifest" href="/site.webmanifest"');
     expect(html).toContain('id="planBatchAi"');
     expect(html).toContain('id="planCommentExport"');
     expect(html).toContain('id="planCoverDownload"');

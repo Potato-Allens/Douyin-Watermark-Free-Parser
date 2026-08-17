@@ -9,8 +9,12 @@ export function renderHomePage(): string {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#030303" />
+  <meta name="application-name" content="${PRODUCT_NAME}" />
+  <meta name="apple-mobile-web-app-title" content="${PRODUCT_NAME}" />
   <title>${SITE_TITLE} - ${PRODUCT_NAME}</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="/site.webmanifest" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.svg" />
   <style>
     :root{color-scheme:dark;--bg:#030303;--panel:#111113;--panel2:#17171b;--line:rgba(255,255,255,.09);--text:#f7f7f8;--muted:rgba(255,255,255,.58);--cyan:#25f4ee;--pink:#fe2c55;--green:#63f59b;--orange:#ffd166;--radius:24px;--shadow:0 24px 70px rgba(0,0,0,.42)}
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 28% 8%,rgba(37,244,238,.12),transparent 30%),radial-gradient(circle at 76% 4%,rgba(254,44,85,.14),transparent 34%),linear-gradient(180deg,#08080a,#030303 46%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--text);overflow-x:hidden}button,input,textarea{font:inherit}p{margin:0}a{color:inherit}
