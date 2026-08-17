@@ -11,7 +11,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Metadata parsing: title, description, author, likes, comments, shares, collects, cover, and background music.
 - Real online count only; default `ONLINE_BASE_COUNT=0`.
 - Member activation-code registration, account/password login, plan permissions, queue priority, and batch privileges.
-- Profile works preview, batch parse queue, persistent task progress, and JSON/text/cover/comment export.
+- Profile works preview, batch parse queue, persistent task progress, and JSON/text/cover ZIP/comment export.
 - Single and batch comments collection/import/export.
 - Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
 - Admin console `/admin` with password + optional Google Authenticator/TOTP, model config, plan config, activation codes, metrics, usage logs, and audit logs.
@@ -128,7 +128,7 @@ POST /api/v1/batch/start
 GET  /api/v1/batch/queue/status
 GET  /api/v1/batch/:id
 POST /api/v1/batch/:id/ai
-GET  /api/v1/batch/:id/export?type=json|scripts|covers|comments
+GET  /api/v1/batch/:id/export?type=json|scripts|covers|covers_zip|comments
 GET  /api/v1/comments?aweme_id=<id>&count=20
 GET  /api/v1/batch/:id/comments
 POST /api/v1/batch/:id/comments/import

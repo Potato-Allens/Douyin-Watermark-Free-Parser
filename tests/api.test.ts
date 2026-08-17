@@ -23,6 +23,7 @@ describe("api routes", () => {
     expect(html).toContain('id="commentsList"');
     expect(html).toContain('id="collectBatchCommentsBtn"');
     expect(html).toContain('id="collectMini"');
+    expect(html).toContain('downloadExport("covers_zip")');
     expect(html).toContain('profilePreviewBtn:$("inspectBtn")');
     expect(html).not.toContain('profilePreviewBtn:$("profilePreviewBtn")');
 
@@ -697,6 +698,14 @@ describe("api routes", () => {
     const scriptText = await scripts.text();
     expect(scripts.headers.get("content-type")).toContain("text/plain");
     expect(scriptText).toContain("aweme_id: 7673000000000000001");
+
+    const coverZip = await app.request(`/api/v1/batch/${taskId}/export?type=covers_zip`, { headers });
+    const coverZipBytes = new Uint8Array(await coverZip.arrayBuffer());
+    expect(coverZip.status).toBe(200);
+    expect(coverZip.headers.get("content-type")).toContain("application/zip");
+    expect(coverZipBytes[0]).toBe(0x50);
+    expect(coverZipBytes[1]).toBe(0x4b);
+    expect(new TextDecoder().decode(coverZipBytes)).toContain("cover-manifest.json");
 
     const imported = await app.request(`/api/v1/batch/${taskId}/comments/import`, {
       method: "POST",

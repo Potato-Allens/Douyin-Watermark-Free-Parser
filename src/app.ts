@@ -555,10 +555,10 @@ export function createApp(options: CreateAppOptions = {}) {
       if (type === "comments" && isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
       }
-      if (type === "covers" && isMemberSession(session) && !session.plan.cover_batch_download) {
+      if ((type === "covers" || type === "covers_zip") && isMemberSession(session) && !session.plan.cover_batch_download) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include cover export", 403);
       }
-      return batchExportResponse(task, type);
+      return await batchExportResponse(task, type, parserOptions.fetcher);
     } catch (error) {
       return jsonError(c, error);
     }
@@ -1275,7 +1275,7 @@ function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
 }
 
-function batchExportResponse(task: BatchTask, type: string): Response {
+async function batchExportResponse(task: BatchTask, type: string, fetcher?: FetchLike): Promise<Response> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   if (type === "scripts") {
     const lines = task.items
@@ -1310,6 +1310,9 @@ function batchExportResponse(task: BatchTask, type: string): Response {
       },
       `batch-${task.id}-covers-${timestamp}.json`,
     );
+  }
+  if (type === "covers_zip") {
+    return await coverZipAttachment(task, timestamp, fetcher);
   }
   if (type === "comments") {
     return jsonAttachment(
@@ -1538,6 +1541,196 @@ function buildAdminCookie(token: string, maxAge: number, requestUrl: string): st
 
 function getClientIp(c: Context): string {
   return firstForwardedHeader(c.req.header("x-forwarded-for")) ?? c.req.header("x-real-ip") ?? "0.0.0.0";
+}
+
+async function coverZipAttachment(task: BatchTask, timestamp: string, fetcher?: FetchLike): Promise<Response> {
+  const client = fetcher ?? globalThis.fetch;
+  if (!client) throw new DouyinServiceError("FETCH_FAILED", "fetch is not available for cover zip export");
+  const covers = task.items.filter((item) => item.cover_url).slice(0, 500);
+  const files: ZipInputFile[] = [];
+  const manifest: Array<{ aweme_id: string; title: string | null; cover_url: string | null; filename: string | null; status: "success" | "failed"; error: string | null }> = [];
+
+  for (let index = 0; index < covers.length; index += 1) {
+    const item = covers[index];
+    const coverUrl = item.cover_url;
+    if (!coverUrl) continue;
+    const filenameBase = `${String(index + 1).padStart(3, "0")}-${item.aweme_id}-${sanitizeFilePart(item.title ?? "cover").slice(0, 40)}`;
+    try {
+      const response = await client(coverUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36",
+          Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          Referer: "https://www.douyin.com/",
+        },
+        redirect: "follow",
+      });
+      if (!response.ok) throw new DouyinServiceError("FETCH_FAILED", `cover upstream status ${response.status}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const filename = `covers/${filenameBase}${coverExtension(response.headers.get("content-type"), coverUrl)}`;
+      files.push({ name: filename, data: bytes });
+      manifest.push({ aweme_id: item.aweme_id, title: item.title, cover_url: coverUrl, filename, status: "success", error: null });
+    } catch (error) {
+      manifest.push({
+        aweme_id: item.aweme_id,
+        title: item.title,
+        cover_url: coverUrl,
+        filename: null,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  files.unshift({
+    name: "cover-manifest.json",
+    data: new TextEncoder().encode(
+      JSON.stringify(
+        {
+          task_id: task.id,
+          homepage_url: task.homepage_url,
+          generated_at: new Date().toISOString(),
+          requested_count: covers.length,
+          success_count: manifest.filter((item) => item.status === "success").length,
+          failed_count: manifest.filter((item) => item.status === "failed").length,
+          covers: manifest,
+        },
+        null,
+        2,
+      ),
+    ),
+  });
+
+  const zip = makeZip(files);
+  const body = zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) as ArrayBuffer;
+  return new Response(body, {
+    headers: {
+      "content-type": "application/zip",
+      "content-disposition": `attachment; filename="batch-${task.id}-covers-${timestamp}.zip"`,
+      "content-length": String(zip.byteLength),
+    },
+  });
+}
+
+interface ZipInputFile {
+  name: string;
+  data: Uint8Array;
+}
+
+function makeZip(files: ZipInputFile[]): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  const encoder = new TextEncoder();
+  let offset = 0;
+  for (const file of files) {
+    const name = encoder.encode(file.name);
+    const crc = crc32(file.data);
+    const local = new Uint8Array(30 + name.length);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, 0, true);
+    localView.setUint16(12, 0, true);
+    localView.setUint32(14, crc, true);
+    localView.setUint32(18, file.data.byteLength, true);
+    localView.setUint32(22, file.data.byteLength, true);
+    localView.setUint16(26, name.length, true);
+    localView.setUint16(28, 0, true);
+    local.set(name, 30);
+    chunks.push(local, file.data);
+
+    const directory = new Uint8Array(46 + name.length);
+    const directoryView = new DataView(directory.buffer);
+    directoryView.setUint32(0, 0x02014b50, true);
+    directoryView.setUint16(4, 20, true);
+    directoryView.setUint16(6, 20, true);
+    directoryView.setUint16(8, 0, true);
+    directoryView.setUint16(10, 0, true);
+    directoryView.setUint16(12, 0, true);
+    directoryView.setUint16(14, 0, true);
+    directoryView.setUint32(16, crc, true);
+    directoryView.setUint32(20, file.data.byteLength, true);
+    directoryView.setUint32(24, file.data.byteLength, true);
+    directoryView.setUint16(28, name.length, true);
+    directoryView.setUint16(30, 0, true);
+    directoryView.setUint16(32, 0, true);
+    directoryView.setUint16(34, 0, true);
+    directoryView.setUint16(36, 0, true);
+    directoryView.setUint32(38, 0, true);
+    directoryView.setUint32(42, offset, true);
+    directory.set(name, 46);
+    central.push(directory);
+
+    offset += local.byteLength + file.data.byteLength;
+  }
+
+  const centralOffset = offset;
+  const centralSize = central.reduce((sum, item) => sum + item.byteLength, 0);
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(4, 0, true);
+  endView.setUint16(6, 0, true);
+  endView.setUint16(8, files.length, true);
+  endView.setUint16(10, files.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, centralOffset, true);
+  endView.setUint16(20, 0, true);
+
+  return concatBytes([...chunks, ...central, end]);
+}
+
+let crcTable: Uint32Array | null = null;
+
+function crc32(data: Uint8Array): number {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let index = 0; index < 256; index += 1) {
+      let value = index;
+      for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+      crcTable[index] = value >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (const byte of data) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, item) => sum + item.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function coverExtension(contentType: string | null, url: string): string {
+  const lowerType = (contentType ?? "").toLowerCase();
+  if (lowerType.includes("png")) return ".png";
+  if (lowerType.includes("webp")) return ".webp";
+  if (lowerType.includes("gif")) return ".gif";
+  if (lowerType.includes("svg")) return ".svg";
+  if (lowerType.includes("jpeg") || lowerType.includes("jpg")) return ".jpg";
+  try {
+    const ext = new URL(url).pathname.match(/\.(jpe?g|png|webp|gif|svg)$/i)?.[0];
+    if (ext) return ext.toLowerCase().replace(".jpeg", ".jpg");
+  } catch {
+    // fall through to default
+  }
+  return ".jpg";
+}
+
+function sanitizeFilePart(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "cover";
 }
 
 function securityDenyReason(c: Context, settings: SecuritySettings): string | null {
