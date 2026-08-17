@@ -20,7 +20,7 @@ import {
   testLlmSettings,
   toServiceError,
 } from "./core/index.ts";
-import type { ApiSuccessResponse, BatchComment, BatchItem, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, SecuritySettings, VipSession, VipStore } from "./core/index.ts";
+import type { ApiSuccessResponse, BatchComment, BatchItem, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, SecuritySettings, UsageLogEntry, VipSession, VipStore } from "./core/index.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import { renderDesignsPage } from "./designs-ui.ts";
 import { renderHomePage } from "./ui.ts";
@@ -939,6 +939,18 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/admin/usage/summary", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      const requestUrl = new URL(c.req.url);
+      const limit = parsePositiveInt(requestUrl.searchParams.get("limit"), 200);
+      const usage = await (await creatorStorePromise).listUsage(limit);
+      return c.json(success(buildUsageSummary(usage)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/admin/usage", async (c) => {
     try {
       requireAdmin(c, adminSessions);
@@ -1344,6 +1356,60 @@ function adminTaskSummary(task: BatchTask) {
       error: item.error,
     })),
   };
+}
+
+function buildUsageSummary(entries: UsageLogEntry[]) {
+  const byKind = new Map<string, { kind: string; total: number; success: number; error: number; blocked: number; latest_at: string | null }>();
+  const byStatus = new Map<number, { status: number; total: number }>();
+  const byIp = new Map<string, number>();
+  const byUser = new Map<string, number>();
+  let successCount = 0;
+  let blockedCount = 0;
+
+  for (const entry of entries) {
+    const kind = entry.kind || "unknown";
+    const bucket = byKind.get(kind) ?? { kind, total: 0, success: 0, error: 0, blocked: 0, latest_at: null };
+    bucket.total += 1;
+    if (entry.status >= 200 && entry.status < 400) {
+      bucket.success += 1;
+      successCount += 1;
+    } else {
+      bucket.error += 1;
+    }
+    if (entry.status === 429 || kind.startsWith("rate_limited")) {
+      bucket.blocked += 1;
+      blockedCount += 1;
+    }
+    if (!bucket.latest_at || entry.created_at_iso > bucket.latest_at) bucket.latest_at = entry.created_at_iso;
+    byKind.set(kind, bucket);
+
+    const statusBucket = byStatus.get(entry.status) ?? { status: entry.status, total: 0 };
+    statusBucket.total += 1;
+    byStatus.set(entry.status, statusBucket);
+
+    byIp.set(entry.ip, (byIp.get(entry.ip) ?? 0) + 1);
+    byUser.set(entry.user_key, (byUser.get(entry.user_key) ?? 0) + 1);
+  }
+
+  return {
+    sample_size: entries.length,
+    total: entries.length,
+    success: successCount,
+    error: entries.length - successCount,
+    blocked: blockedCount,
+    by_kind: [...byKind.values()].sort((a, b) => b.total - a.total || a.kind.localeCompare(b.kind)),
+    by_status: [...byStatus.values()].sort((a, b) => b.total - a.total || a.status - b.status),
+    top_ips: topCounts(byIp, "ip"),
+    top_users: topCounts(byUser, "user_key"),
+    latest_at: entries[0]?.created_at_iso ?? null,
+  };
+}
+
+function topCounts(keyed: Map<string, number>, keyName: "ip" | "user_key") {
+  return [...keyed.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 10)
+    .map(([key, total]) => ({ [keyName]: key, total }));
 }
 
 function normalizeCommentImportPayload(body: Record<string, unknown>): Array<{ aweme_id: string; comments: BatchComment[] }> {

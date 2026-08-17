@@ -19,7 +19,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Cookie-session mutations use double-submit CSRF tokens; bearer-token API calls remain supported for the web UI and server-side operation.
 - Rate-limit interceptions are recorded in usage logs and audit logs as `rate_limit_block`.
 - Admin security policies: IP blacklist, optional Origin/Referer allowlist, browser-header checks, and blocked-request audit logs.
-- Admin operations: batch job list/cancel/retry, member user list/plan update/disable, and full plan-permission editing for batch AI, comments, covers, queue priority, and concurrency.
+- Admin operations: API usage summary, batch job list/cancel/retry, member user list/plan update/disable, and full plan-permission editing for batch AI, comments, covers, queue priority, and concurrency.
 
 ## Quick Start
 
@@ -156,6 +156,7 @@ GET  /api/admin/settings/llm
 POST /api/admin/settings/llm
 POST /api/admin/settings/llm/test
 GET  /api/admin/metrics
+GET  /api/admin/usage/summary
 GET  /api/admin/usage
 GET  /api/admin/audit-logs
 GET  /api/admin/rate-limits

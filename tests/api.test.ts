@@ -77,9 +77,11 @@ describe("api routes", () => {
     expect(response.status).toBe(200);
     expect(html).toContain("&#25238;&#26144;&#28789;&#24863;&#21488;&#21518;&#21488;");
     expect(html).toContain("/api/admin/rate-limits");
+    expect(html).toContain("/api/admin/usage/summary");
     expect(html).toContain("/api/admin/security");
     expect(html).toContain("/api/admin/jobs");
     expect(html).toContain("/api/admin/users");
+    expect(html).toContain('id="usageSummaryList"');
     expect(html).toContain('rel="manifest" href="/site.webmanifest"');
     expect(html).toContain('id="planBatchAi"');
     expect(html).toContain('id="planCommentExport"');
@@ -333,6 +335,13 @@ describe("api routes", () => {
       const audit = await app.request("/api/admin/audit-logs?limit=10", { headers: { authorization: "Bearer usage-admin-token" } });
       const auditBody = await audit.json();
       expect(auditBody.data.some((entry: any) => entry.action === "rate_limit_block" && entry.detail.includes('"kind":"parse"'))).toBe(true);
+
+      const summary = await app.request("/api/admin/usage/summary?limit=20", { headers: { authorization: "Bearer usage-admin-token" } });
+      const summaryBody = await summary.json();
+      expect(summary.status).toBe(200);
+      expect(summaryBody.data.by_kind.some((entry: any) => entry.kind === "parse" && entry.total >= 2 && entry.success >= 1)).toBe(true);
+      expect(summaryBody.data.by_kind.some((entry: any) => entry.kind === "rate_limited_parse" && entry.blocked >= 1)).toBe(true);
+      expect(summaryBody.data.top_ips[0].total).toBeGreaterThan(0);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;

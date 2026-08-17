@@ -64,6 +64,7 @@
 - 限流拦截审计已补齐：解析、媒体代理、批量、AI 和评论接口触发限流时会写入 `rate_limited_*` 调用日志，并写入 `rate_limit_block` 安全审计，后台可直接查看。
 - 方案 A 已确认继续推进；后台小米/OpenAI-compatible 大模型配置补齐高级参数：请求超时、最大 token、temperature，便于控制速度、成本和文案发散度。
 - Cookie 会话 CSRF 防护已落地：会员登录/注册和后台登录都会下发 `csrf_token` 与同名 CSRF Cookie，使用 Cookie 鉴权的写操作必须携带 `X-CSRF-Token`，降低跨站盗用后台和会员批量能力的风险。
+- 后台接口调用汇总已落地：`GET /api/admin/usage/summary` 按接口类型、状态码、用户、IP 汇总最近调用，后台首页直接显示成功、错误、限流拦截和高频来源。
 
 ## 2. 本次确认后的新增需求
 
@@ -594,6 +595,10 @@ POST /api/admin/activation-codes
 GET  /api/admin/settings/llm
 POST /api/admin/settings/llm/test
 POST /api/admin/settings/llm
+GET  /api/admin/metrics
+GET  /api/admin/usage/summary
+GET  /api/admin/usage
+GET  /api/admin/audit-logs
 GET  /api/admin/rate-limits
 POST /api/admin/rate-limits
 GET  /api/admin/security
