@@ -1085,6 +1085,59 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/v1/comments/export", async (c) => {
+    const store = await creatorStorePromise;
+    let sessionKey = "unknown";
+    try {
+      await guardPublicAccess(c, "comments_export");
+      const session = await requireVip(c, await getStore());
+      sessionKey = session.code;
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
+      }
+      const requestUrl = new URL(c.req.url);
+      const type = requestUrl.searchParams.get("type") === "csv" ? "csv" : "json";
+      const awemeId = requestUrl.searchParams.get("aweme_id");
+      const inputUrl = requestUrl.searchParams.get("url");
+      const taskId = requestUrl.searchParams.get("task_id");
+
+      if (taskId) {
+        const task = await getBatchTask(taskId);
+        if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+        assertBatchTaskAccess(task, session);
+        const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
+        const exportedCount = items.reduce((total, item) => total + item.comments.length, 0);
+        await store.recordUsage({ kind: "comments_export", user_key: session.code, ip: getClientIp(c), path: "/api/v1/comments/export", status: 200, detail: JSON.stringify({ task_id: task.id, aweme_id: awemeId ?? null, count: exportedCount, type }) });
+        return commentsExportResponse(
+          {
+            task_id: task.id,
+            homepage_url: task.homepage_url,
+            aweme_id: awemeId ?? null,
+            items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })),
+          },
+          type,
+          `comments-${task.id}`,
+        );
+      }
+
+      let targetAwemeId = awemeId;
+      if (!targetAwemeId && inputUrl) {
+        const parsed = await parseForRequest(inputUrl);
+        targetAwemeId = parsed.source.aweme_id;
+      }
+      if (!targetAwemeId) throw new DouyinServiceError("MISSING_URL", "aweme_id, url or task_id query parameter is required");
+      const count = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 100), 100);
+      const cursor = parsePositiveInt(requestUrl.searchParams.get("cursor"), 0);
+      await enforceMemberRateLimit("comments_export", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000);
+      const data = await fetchDouyinComments(targetAwemeId, { ...parserOptions, count, cursor });
+      await store.recordUsage({ kind: "comments_export", user_key: session.code, ip: getClientIp(c), path: "/api/v1/comments/export", status: 200, detail: JSON.stringify({ aweme_id: targetAwemeId, count: data.comments.length, type }) });
+      return commentsExportResponse({ ...data, input_url: inputUrl ?? null }, type, `comments-${targetAwemeId}`);
+    } catch (error) {
+      await store.recordUsage({ kind: "comments_export", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/comments/export", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/v1/batch/:id/jobs", async (c) => {
     try {
       await guardPublicAccess(c, "batch_post_jobs");
@@ -2157,6 +2210,27 @@ function jsonAttachment(value: unknown, filename: string): Response {
       "content-disposition": `attachment; filename="${filename}"`,
     },
   });
+}
+
+function commentsExportResponse(value: any, type: "json" | "csv", filenamePrefix: string): Response {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const safePrefix = sanitizeFilePart(filenamePrefix || "comments");
+  if (type === "csv") {
+    const rows: Array<Array<string | number | null | undefined>> = [["aweme_id", "video_title", "comment_id", "nickname", "text", "digg_count", "create_time"]];
+    if (Array.isArray(value.items)) {
+      for (const item of value.items) {
+        for (const comment of Array.isArray(item.comments) ? item.comments : []) {
+          rows.push([item.aweme_id, item.title, comment.cid, comment.nickname, comment.text, comment.digg_count, comment.create_time]);
+        }
+      }
+    } else {
+      for (const comment of Array.isArray(value.comments) ? value.comments : []) {
+        rows.push([value.aweme_id, null, comment.cid, comment.nickname, comment.text, comment.digg_count, comment.create_time]);
+      }
+    }
+    return csvAttachment(rows, `${safePrefix}-${timestamp}.csv`);
+  }
+  return jsonAttachment(value, `${safePrefix}-${timestamp}.json`);
 }
 
 function buildFilename(parsed: ParsedDouyinInfo): string {

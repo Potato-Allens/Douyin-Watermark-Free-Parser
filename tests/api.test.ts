@@ -54,6 +54,8 @@ describe("api routes", () => {
     expect(html).toContain('id="centerDownloadBtn"');
     expect(html).toContain('id="commentsBtn"');
     expect(html).toContain('id="commentsList"');
+    expect(html).toContain('id="exportCurrentCommentsJsonBtn"');
+    expect(html).toContain('id="exportCurrentCommentsCsvBtn"');
     expect(html).toContain('id="aiTranscriptBtn"');
     expect(html).toContain('id="aiTagsBtn"');
     expect(html).toContain("/api/v1/ai/transcript");
@@ -972,6 +974,19 @@ describe("api routes", () => {
     expect(commentsBody.data.comments[0]).toMatchObject({ cid: "comment-1", nickname: "观众A", text: "这个视频很有用", digg_count: 8 });
     expect(commentsBody.data.next_cursor).toBeNull();
 
+    const exportedSingleJson = await app.request("/api/v1/comments/export?aweme_id=7673000000000000001&type=json&count=10", { headers });
+    const exportedSingleJsonBody = await exportedSingleJson.json();
+    expect(exportedSingleJson.status).toBe(200);
+    expect(exportedSingleJson.headers.get("content-disposition")).toContain("comments-7673000000000000001");
+    expect(exportedSingleJsonBody.comments[0].text).toBe("这个视频很有用");
+
+    const exportedSingleCsv = await app.request("/api/v1/comments/export?aweme_id=7673000000000000001&type=csv&count=10", { headers });
+    const exportedSingleCsvText = await exportedSingleCsv.text();
+    expect(exportedSingleCsv.status).toBe(200);
+    expect(exportedSingleCsv.headers.get("content-type")).toContain("text/csv");
+    expect(exportedSingleCsvText).toContain("comment_id,nickname,text");
+    expect(exportedSingleCsvText).toContain("这个视频很有用");
+
     const started = await app.request("/api/v1/batch/start", {
       method: "POST",
       headers,
@@ -997,6 +1012,12 @@ describe("api routes", () => {
     const exported = await app.request(`/api/v1/batch/${taskId}/export?type=comments`, { headers });
     const exportedBody = await exported.json();
     expect(exportedBody.comments[0].comments[0].text).toBe("这个视频很有用");
+
+    const exportedTaskCommentsCsv = await app.request(`/api/v1/comments/export?task_id=${taskId}&type=csv`, { headers });
+    const exportedTaskCommentsCsvText = await exportedTaskCommentsCsv.text();
+    expect(exportedTaskCommentsCsv.status).toBe(200);
+    expect(exportedTaskCommentsCsvText).toContain("7673000000000000001");
+    expect(exportedTaskCommentsCsvText).toContain("这个视频很有用");
   });
 
   it("paginates profile works so batch can start beyond the first page", async () => {

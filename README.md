@@ -137,6 +137,8 @@ GET  /api/v1/batch/:id/jobs
 POST /api/v1/batch/:id/ai
 GET  /api/v1/batch/:id/export?type=json|items_csv|scripts|scripts_csv|covers|covers_zip|comments|comments_csv
 GET  /api/v1/comments?aweme_id=<id>&count=20
+GET  /api/v1/comments/export?aweme_id=<id>&type=json|csv
+GET  /api/v1/comments/export?task_id=<batch-id>&type=json|csv
 GET  /api/v1/batch/:id/comments
 POST /api/v1/batch/:id/comments/import
 POST /api/v1/batch/:id/comments/collect
