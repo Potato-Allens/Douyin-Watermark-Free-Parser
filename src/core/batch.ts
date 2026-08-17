@@ -206,7 +206,7 @@ export async function getBatchQueueSnapshot(): Promise<BatchQueueSnapshot> {
   return {
     active_tasks: activeTaskCount,
     queued_tasks: [...tasks.values()].filter((task) => task.status === "queued").length,
-    max_active_tasks: getMaxActiveTasks(),
+    max_active_tasks: getEffectiveMaxActiveTasks(),
     max_global_concurrency: getMaxGlobalConcurrency(),
     tasks: [...tasks.values()]
       .filter((task) => task.status === "queued" || task.status === "running")
@@ -235,7 +235,7 @@ function scheduleQueue(): void {
 }
 
 function drainQueue(): void {
-  const maxActiveTasks = getMaxActiveTasks();
+  const maxActiveTasks = getEffectiveMaxActiveTasks();
   updateQueuePositions();
   while (activeTaskCount < maxActiveTasks) {
     const next = [...tasks.values()]
@@ -514,8 +514,16 @@ function getPersistFilePath(): string {
   return getEnv().BATCH_STORE_FILE ?? ".data/batch-tasks.json";
 }
 
-function getMaxActiveTasks(): number {
-  return clamp(readEnvInt("BATCH_MAX_ACTIVE_TASKS", 2), 1, 20);
+function getEffectiveMaxActiveTasks(): number {
+  let limit = getMaxActiveTasks();
+  for (const options of executions.values()) {
+    limit = Math.min(limit, getMaxActiveTasks(options));
+  }
+  return limit;
+}
+
+function getMaxActiveTasks(options?: BatchStartOptions): number {
+  return clamp(Math.floor(options?.maxActiveTasks ?? readEnvInt("BATCH_MAX_ACTIVE_TASKS", 2)), 1, 20);
 }
 
 function getMaxGlobalConcurrency(options?: BatchStartOptions): number {

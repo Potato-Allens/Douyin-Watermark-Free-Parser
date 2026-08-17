@@ -212,6 +212,10 @@ Admin login supports username/password plus Google Authenticator/TOTP. `/api/adm
 | `PARSE_RATE_LIMIT_PER_MINUTE` | `60` | Public parse limit per IP |
 | `MEDIA_RATE_LIMIT_PER_MINUTE` | `120` | Media/download proxy limit per IP |
 | `BATCH_RATE_LIMIT_PER_HOUR` | `30` | Batch task creation/inspection limit |
+| `BATCH_MAX_ACTIVE_TASKS` | `2` | Base max active batch parse tasks |
+| `BATCH_MAX_GLOBAL_CONCURRENCY` | `4` | Base global parse worker concurrency |
+| `BATCH_QUEUE_PRESSURE_ONLINE` | `5` | Online users threshold where batch resources start to shrink |
+| `BATCH_QUEUE_PRESSURE_STEP` | `5` | More online users per additional resource pressure level |
 | `AI_RATE_LIMIT_PER_DAY` | `1000` | Global AI call ceiling per user |
 | `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comments collection ceiling per user |
 | `POST_JOB_MAX_ACTIVE` | `2` | Max concurrent async batch AI/comment post-processing jobs |

@@ -1339,9 +1339,18 @@ describe("api routes", () => {
     expect(videosBody.data.preview_count).toBe(1);
     expect(videosBody.data.items[0].download_url).toContain("/api/v1/download");
 
+    for (let index = 0; index < 5; index += 1) {
+      await app.request("/api/v1/online/ping", {
+        method: "POST",
+        body: JSON.stringify({ client_id: `queue-client-${index}` }),
+      });
+    }
     const queue = await app.request("/api/v1/batch/queue/status", { headers });
     const queueBody = await queue.json();
     expect(queue.status).toBe(200);
-    expect(queueBody.data.max_active_tasks).toBeGreaterThan(0);
+    expect(queueBody.data.adaptive.active_connections).toBe(5);
+    expect(queueBody.data.adaptive.pressure_level).toBe(1);
+    expect(queueBody.data.max_active_tasks).toBe(1);
+    expect(queueBody.data.max_global_concurrency).toBe(3);
   });
 });

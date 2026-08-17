@@ -302,6 +302,24 @@ export function createApp(options: CreateAppOptions = {}) {
     return onlineStats();
   };
 
+  const adaptiveBatchResourceLimits = () => {
+    const stats = onlineStats();
+    const pressureOnline = parsePositiveInt(getRuntimeEnv().BATCH_QUEUE_PRESSURE_ONLINE, 5);
+    const pressureStep = parsePositiveInt(getRuntimeEnv().BATCH_QUEUE_PRESSURE_STEP, 5);
+    const baseMaxActiveTasks = parsePositiveInt(getRuntimeEnv().BATCH_MAX_ACTIVE_TASKS, 2);
+    const baseMaxGlobalConcurrency = parsePositiveInt(getRuntimeEnv().BATCH_MAX_GLOBAL_CONCURRENCY, 4);
+    const pressureLevel = stats.active_connections >= pressureOnline ? 1 + Math.floor((stats.active_connections - pressureOnline) / pressureStep) : 0;
+    return {
+      online_count: stats.online_count,
+      active_connections: stats.active_connections,
+      pressure_online: pressureOnline,
+      pressure_step: pressureStep,
+      pressure_level: pressureLevel,
+      max_active_tasks: Math.max(1, baseMaxActiveTasks - pressureLevel),
+      max_global_concurrency: Math.max(1, baseMaxGlobalConcurrency - pressureLevel),
+    };
+  };
+
   const parseForRequest = async (inputUrl: string) => {
     if (cacheTtlMs > 0) {
       const cached = cache.get(inputUrl);
@@ -665,7 +683,8 @@ export function createApp(options: CreateAppOptions = {}) {
       const count = parsePositiveInt(body.count, 1);
       const maxCount = getBatchParseLimit(session);
       if (count > maxCount) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${maxCount} works per batch`, 403);
-      const concurrency = Math.min(parsePositiveInt(body.concurrency, 3), getConcurrencyLimit(session));
+      const resourceLimits = adaptiveBatchResourceLimits();
+      const concurrency = Math.min(parsePositiveInt(body.concurrency, 3), getConcurrencyLimit(session), resourceLimits.max_global_concurrency);
       await enforceMemberRateLimit("batch_start", c, session, (await getEffectiveRateLimits()).batch_per_hour, 60 * 60 * 1000);
       const publicRequestUrl = getPublicRequestUrl(c);
       const permissions = permissionsForSession(session);
@@ -678,8 +697,10 @@ export function createApp(options: CreateAppOptions = {}) {
         makeDownloadUrl: (parsed) => decorateParsedInfo(parsed, publicRequestUrl).download.download_url,
         ownerKey: session.code,
         queuePriority: permissions.queue_priority,
+        maxActiveTasks: resourceLimits.max_active_tasks,
+        maxGlobalConcurrency: resourceLimits.max_global_concurrency,
       });
-      await recordUsage({ kind: "batch_start", user_key: session.code, ip: getClientIp(c), path: "/api/v1/batch/start", status: 200, detail: JSON.stringify({ task_id: task.id, requested_count: task.requested_count, concurrency: task.concurrency, queue_priority: task.queue_priority }) });
+      await recordUsage({ kind: "batch_start", user_key: session.code, ip: getClientIp(c), path: "/api/v1/batch/start", status: 200, detail: JSON.stringify({ task_id: task.id, requested_count: task.requested_count, concurrency: task.concurrency, queue_priority: task.queue_priority, resource_limits: resourceLimits }) });
       return c.json(success(task));
     } catch (error) {
       await recordUsage({ kind: "batch_start", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/batch/start", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
@@ -720,7 +741,16 @@ export function createApp(options: CreateAppOptions = {}) {
     try {
       await guardPublicAccess(c, "batch_queue");
       await requireVip(c, await getStore());
-      return c.json(success(await getBatchQueueSnapshot()));
+      const snapshot = await getBatchQueueSnapshot();
+      const adaptive = adaptiveBatchResourceLimits();
+      return c.json(
+        success({
+          ...snapshot,
+          max_active_tasks: Math.min(snapshot.max_active_tasks, adaptive.max_active_tasks),
+          max_global_concurrency: Math.min(snapshot.max_global_concurrency, adaptive.max_global_concurrency),
+          adaptive,
+        }),
+      );
     } catch (error) {
       return jsonError(c, error);
     }
@@ -1452,15 +1482,18 @@ export function createApp(options: CreateAppOptions = {}) {
       const original = await getBatchTask(c.req.param("id"));
       if (!original) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       const publicRequestUrl = getPublicRequestUrl(c);
+      const resourceLimits = adaptiveBatchResourceLimits();
       const task = await startBatchTask({
         homepageUrl: original.homepage_url,
         count: original.requested_count,
-        concurrency: original.concurrency,
+        concurrency: Math.min(original.concurrency, resourceLimits.max_global_concurrency),
         parseOptions: parserOptions,
         parseByAwemeId: async (awemeId) => parseForRequest(`https://www.douyin.com/video/${awemeId}`),
         makeDownloadUrl: (parsed) => decorateParsedInfo(parsed, publicRequestUrl).download.download_url,
         ownerKey: original.owner_key,
         queuePriority: original.queue_priority,
+        maxActiveTasks: resourceLimits.max_active_tasks,
+        maxGlobalConcurrency: resourceLimits.max_global_concurrency,
       });
       await store.recordAudit({ actor: "admin", action: "batch_job_retry", ip: getClientIp(c), detail: JSON.stringify({ original_task_id: original.id, new_task_id: task.id, owner_key: task.owner_key }) });
       return c.json(success(adminTaskSummary(task)));

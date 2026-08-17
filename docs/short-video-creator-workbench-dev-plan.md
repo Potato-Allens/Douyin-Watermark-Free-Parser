@@ -68,6 +68,7 @@
 - Cookie 会话 CSRF 防护已落地：会员登录/注册和后台登录都会下发 `csrf_token` 与同名 CSRF Cookie，使用 Cookie 鉴权的写操作必须携带 `X-CSRF-Token`，降低跨站盗用后台和会员批量能力的风险。
 - 后台接口调用汇总已落地：`GET /api/admin/usage/summary` 按接口类型、状态码、用户、IP 汇总最近调用，后台首页直接显示成功、错误、限流拦截和高频来源。
 - 批量后处理队列已落地：批量 AI 口播文案和批量评论采集支持 `async: true` 加入队列，进度写入批量任务 `post_jobs`，离开页面后回来仍能看到完成进度；并发由 `POST_JOB_MAX_ACTIVE` 控制；后台任务列表会展开每个后处理任务并支持取消 queued/running 状态。
+- 在线人数压力自适应资源已落地：批量解析创建时会根据当前真实在线人数降低 `max_active_tasks` 和全局并发，默认 5 人在线开始进入更保守队列模式；`GET /api/v1/batch/queue/status` 返回 `adaptive` 资源状态。
 
 ## 2. 本次确认后的新增需求
 
@@ -498,6 +499,7 @@ flowchart TD
 - AI 批量生成进入 AI 队列。
 - 评论采集进入评论队列。
 - 队列按会员优先级排序。
+- 当前在线人数达到 `BATCH_QUEUE_PRESSURE_ONLINE` 后，批量解析自动降低活动任务数和全局并发，降低后的任务自然排队。
 - 企业版可免排队或最高优先级。
 
 ### 12.2 自适应并发
