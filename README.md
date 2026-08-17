@@ -140,6 +140,9 @@ POST /api/v1/batch/:id/comments/import
 POST /api/v1/batch/:id/comments/collect
 POST /api/v1/ai/transcript
 POST /api/v1/ai/script
+POST /api/v1/ai/rewrite
+POST /api/v1/ai/tags
+POST /api/v1/ai/batch
 ```
 
 For batch AI and comments collection, pass `"async": true` to queue the operation and poll `GET /api/v1/batch/:id` or `GET /api/v1/batch/:id/jobs` for `post_jobs` progress.

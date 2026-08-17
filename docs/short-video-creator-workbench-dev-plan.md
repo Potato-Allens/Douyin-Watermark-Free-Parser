@@ -38,7 +38,7 @@
 - 后台支持激活码生成/更新：`GET/POST /api/admin/codes`。
 - 后台支持小米大模型配置和测试连接：`GET/POST /api/admin/settings/llm`、`POST /api/admin/settings/llm/test`。
 - 后台 Google Authenticator 动态码配置闭环已落地：`GET /api/admin/totp`、`POST /api/admin/totp/setup`、`POST /api/admin/totp/verify` 支持生成 Base32 密钥、复制 `otpauth_uri`、验证六位码后启用/停用，并写入审计日志。
-- AI 文案接口已按会员套餐日额度限流：`POST /api/v1/ai/transcript` 先生成口播草稿，`POST /api/v1/ai/script` 生成标题、文案、简介和标签。
+- AI 文案接口已按会员套餐日额度限流：`POST /api/v1/ai/transcript` 先生成口播草稿，`POST /api/v1/ai/script` 生成标题、文案、简介和标签；`POST /api/v1/ai/rewrite`、`POST /api/v1/ai/tags`、`POST /api/v1/ai/batch` 作为改写、标签和批量文案的直观入口。
 - 批量解析按会员套餐限制单次数量和并发。
 
 ## 1.3 本轮开发落地

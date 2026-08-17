@@ -54,7 +54,11 @@ describe("api routes", () => {
     expect(html).toContain('id="commentsBtn"');
     expect(html).toContain('id="commentsList"');
     expect(html).toContain('id="aiTranscriptBtn"');
+    expect(html).toContain('id="aiTagsBtn"');
     expect(html).toContain("/api/v1/ai/transcript");
+    expect(html).toContain("/api/v1/ai/rewrite");
+    expect(html).toContain("/api/v1/ai/tags");
+    expect(html).toContain("/api/v1/ai/batch");
     expect(html).toContain('id="collectBatchCommentsBtn"');
     expect(html).toContain('id="collectMini"');
     expect(html).toContain('downloadExport("covers_zip")');
@@ -568,6 +572,26 @@ describe("api routes", () => {
     });
     expect(allowed.status).toBe(200);
     expect((await allowed.json()).data.rewritten_script).toBeTruthy();
+
+    const rewrite = await app.request("/api/v1/ai/rewrite", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/", prompt: "更口语化" }),
+    });
+    const rewriteBody = await rewrite.json();
+    expect(rewrite.status).toBe(200);
+    expect(rewriteBody.data.mode).toBe("custom_rewrite");
+    expect(rewriteBody.data.title).toBeTruthy();
+
+    const tags = await app.request("/api/v1/ai/tags", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/" }),
+    });
+    const tagsBody = await tags.json();
+    expect(tags.status).toBe(200);
+    expect(tagsBody.data.tags.length).toBeGreaterThan(0);
+    expect(tagsBody.data.rewritten_script).toBeUndefined();
 
     const transcript = await app.request("/api/v1/ai/transcript", {
       method: "POST",
@@ -1088,6 +1112,16 @@ describe("api routes", () => {
     expect(ai.status).toBe(200);
     expect(aiBody.data.generated_count).toBe(1);
     expect(aiBody.data.items[0].ai_copy.tags.length).toBeGreaterThan(0);
+
+    const aiBatchAlias = await app.request("/api/v1/ai/batch", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ task_id: taskId, prompt: "批量别名入口", count: 1 }),
+    });
+    const aiBatchAliasBody = await aiBatchAlias.json();
+    expect(aiBatchAlias.status).toBe(200);
+    expect(aiBatchAliasBody.data.task_id).toBe(taskId);
+    expect(aiBatchAliasBody.data.generated_count).toBe(1);
 
     const exportedJson = await app.request(`/api/v1/batch/${taskId}/export?type=json`, { headers });
     const exportedBody = await exportedJson.json();

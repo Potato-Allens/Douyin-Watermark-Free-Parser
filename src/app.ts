@@ -734,6 +734,81 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.post("/api/v1/ai/batch", async (c) => {
+    const store = await creatorStorePromise;
+    let sessionKey = "unknown";
+    let taskId = "unknown";
+    try {
+      await guardPublicAccess(c, "batch_ai");
+      const session = await requireVip(c, await getStore(), { mutation: true });
+      sessionKey = session.code;
+      const body = await readJsonBody(c);
+      taskId = asString(body.task_id) ?? asString(body.id) ?? "";
+      if (!taskId) throw new DouyinServiceError("MISSING_URL", "task_id is required", 400);
+      const task = await getBatchTask(taskId);
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
+      const prompt = asString(body.prompt);
+      const mode = asString(body.mode) ?? "batch_script";
+      const asyncMode = body.async === true || body.async === "true";
+      const limit = Math.min(parsePositiveInt(body.count, task.items.length), getBatchAiLimit(session));
+      const items = task.items.filter((item) => item.status === "success").slice(0, limit);
+      if (items.length === 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "batch task has no successful video item for AI copywriting", 409);
+      if (items.length > getBatchAiLimit(session)) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${getBatchAiLimit(session)} AI scripts per batch`, 403);
+      const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
+      if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
+      await enforceMemberRateLimit("batch_ai", c, session, Math.max(1, Math.floor(aiQuota / 2)), 24 * 60 * 60 * 1000, items.length);
+
+      const runAiJob = async (job?: BatchPostJob) => {
+        const results = [];
+        for (const item of items) {
+          if (job?.status === "cancelled") break;
+          try {
+            const parsed = parsedFromBatchItem(task, item);
+            const ai = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
+            item.ai_copy = ai;
+            results.push({ aweme_id: item.aweme_id, title: item.title, ai_copy: ai });
+            if (job) job.success_count += 1;
+          } catch (error) {
+            if (job) job.failed_count += 1;
+            results.push({ aweme_id: item.aweme_id, title: item.title, ai_copy: null, error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            if (job) {
+              job.completed_count = job.success_count + job.failed_count;
+              job.updated_at = new Date().toISOString();
+              await saveBatchTask(task);
+            }
+          }
+        }
+        if (job && job.status !== "cancelled") {
+          job.status = job.failed_count === job.requested_count ? "failed" : "completed";
+          job.finished_at = new Date().toISOString();
+          job.updated_at = job.finished_at;
+        }
+        await saveBatchTask(task);
+        return results;
+      };
+
+      if (asyncMode) {
+        const job = createBatchPostJob("ai", items.length, permissionsForSession(session).queue_priority, { mode, prompt: prompt ?? null, alias: "/api/v1/ai/batch" });
+        await enqueuePostJob(task, job, async (runningJob) => {
+          const results = await runAiJob(runningJob);
+          await store.recordUsage({ kind: `batch_ai_${mode}_async_done`, user_key: session.code, ip: getClientIp(c), path: "/api/v1/ai/batch", status: 200, detail: JSON.stringify({ task_id: task.id, job_id: runningJob.id, count: results.length }) });
+        });
+        await store.recordUsage({ kind: `batch_ai_${mode}_queued`, user_key: session.code, ip: getClientIp(c), path: "/api/v1/ai/batch", status: 202, detail: JSON.stringify({ task_id: task.id, job_id: job.id, count: items.length }) });
+        return c.json(success({ task_id: task.id, queued: true, job, post_jobs: task.post_jobs }), 202);
+      }
+
+      const results = await runAiJob();
+      await saveBatchTask(task);
+      await store.recordUsage({ kind: `batch_ai_${mode}`, user_key: session.code, ip: getClientIp(c), path: "/api/v1/ai/batch", status: 200, detail: JSON.stringify({ task_id: task.id, count: results.length }) });
+      return c.json(success({ task_id: task.id, generated_count: results.length, items: results }));
+    } catch (error) {
+      await store.recordUsage({ kind: "batch_ai", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/ai/batch", status: error instanceof DouyinServiceError ? error.status : 500, detail: JSON.stringify({ task_id: taskId, error: error instanceof Error ? error.message : String(error) }) });
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/v1/batch/:id/export", async (c) => {
     try {
       await guardPublicAccess(c, "batch_export");
@@ -836,11 +911,13 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.post("/api/v1/ai/script", async (c) => {
+  const handleSingleAiCopy = async (c: Context, defaultMode: string, path: string, responseKind: "full" | "tags" = "full") => {
     const store = await creatorStorePromise;
+    let sessionKey = "unknown";
     try {
-      await guardPublicAccess(c, "ai_script");
+      await guardPublicAccess(c, responseKind === "tags" ? "ai_tags" : "ai_script");
       const session = await requireVip(c, await getStore(), { mutation: true });
+      sessionKey = session.code;
       const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
       if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
       await enforceMemberRateLimit("ai", c, session, aiQuota, 24 * 60 * 60 * 1000);
@@ -848,15 +925,33 @@ export function createApp(options: CreateAppOptions = {}) {
       const inputUrl = asString(body.url);
       if (!inputUrl) throw new DouyinServiceError("MISSING_URL");
       const prompt = asString(body.prompt);
-      const mode = asString(body.mode) ?? "script";
+      const mode = asString(body.mode) ?? defaultMode;
       const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
       const data = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
-      await store.recordUsage({ kind: `ai_${mode}`, user_key: session.code, ip: getClientIp(c), path: "/api/v1/ai/script", status: 200 });
-      return c.json(success(data));
+      await store.recordUsage({ kind: `ai_${mode}`, user_key: session.code, ip: getClientIp(c), path, status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, response: responseKind }) });
+      return c.json(
+        success(
+          responseKind === "tags"
+            ? { provider: data.provider, mode: data.mode, title: data.title, description: data.description, tags: data.tags, prompt: data.prompt, source_aweme_id: data.source_aweme_id }
+            : data,
+        ),
+      );
     } catch (error) {
-      await store.recordUsage({ kind: "ai_script", user_key: "unknown", ip: getClientIp(c), path: "/api/v1/ai/script", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      await store.recordUsage({ kind: responseKind === "tags" ? "ai_tags" : "ai_script", user_key: sessionKey, ip: getClientIp(c), path, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
+  };
+
+  app.post("/api/v1/ai/script", async (c) => {
+    return handleSingleAiCopy(c, "script", "/api/v1/ai/script");
+  });
+
+  app.post("/api/v1/ai/rewrite", async (c) => {
+    return handleSingleAiCopy(c, "custom_rewrite", "/api/v1/ai/rewrite");
+  });
+
+  app.post("/api/v1/ai/tags", async (c) => {
+    return handleSingleAiCopy(c, "tags", "/api/v1/ai/tags", "tags");
   });
 
   app.get("/api/v1/comments", async (c) => {
