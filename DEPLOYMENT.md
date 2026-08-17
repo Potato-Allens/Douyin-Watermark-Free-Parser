@@ -1,276 +1,138 @@
 # 部署文档
 
-这份文档只写最常用的部署方式，按步骤执行即可。
+目标域名示例：`dy.devforai.cn`
 
-## 1. 准备环境
-
-需要安装：
-
-- Node.js 22
-- pnpm
-- Git
-
-安装依赖：
+## 1. 本地检查
 
 ```bash
 pnpm install
-```
-
-本地检查：
-
-```bash
 pnpm test
 pnpm build
+pnpm smoke:node
 ```
 
-## 2. 本地启动
+## 2. Docker 部署
+
+服务器安装 Docker 后执行：
 
 ```bash
-pnpm start
-```
+git clone https://github.com/Potato-Allens/Douyin-Watermark-Free-Parser.git /opt/douyin-parser
+cd /opt/douyin-parser
 
-默认地址：
-
-```text
-http://localhost:8000
-```
-
-测试接口：
-
-```bash
-curl "http://localhost:8000/api/v1/parse?url=https://v.douyin.com/xxxx/"
-```
-
-## 3. Vercel 部署
-
-推荐新手优先用 Vercel，最简单。
-
-### 方法一：网页导入 GitHub 仓库
-
-1. 打开 Vercel。
-2. 点击 **Add New Project**。
-3. 选择 GitHub 仓库：
-
-```text
-Potato-Allens/Douyin-Watermark-Free-Parser
-```
-
-4. Framework 选择 **Other**。
-5. Build Command 保持默认或填写：
-
-```bash
-pnpm build
-```
-
-6. Install Command 保持默认或填写：
-
-```bash
-pnpm install
-```
-
-7. 点击 Deploy。
-
-部署完成后访问：
-
-```text
-https://你的域名.vercel.app/api/v1/parse?url=https://v.douyin.com/xxxx/
-```
-
-### 方法二：命令行部署
-
-登录 Vercel：
-
-```bash
-npx vercel login
-```
-
-绑定项目：
-
-```bash
-npx vercel link
-```
-
-部署预览环境：
-
-```bash
-npx vercel deploy
-```
-
-部署生产环境：
-
-```bash
-npx vercel deploy --prod
-```
-
-验证生产环境：
-
-```bash
-VERCEL_REMOTE_BASE_URL=https://你的域名.vercel.app pnpm verify:vercel-remote
-```
-
-## 4. Docker 部署
-
-构建镜像：
-
-```bash
 docker build -t douyin-parser .
+docker rm -f douyin-parser 2>/dev/null || true
+docker run -d \
+  --name douyin-parser \
+  --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 \
+  -e PORT=8000 \
+  -e DATABASE_URL=/app/.data/app.db \
+  -e VIP_INIT_CODES="请改成你的激活码1,请改成你的激活码2" \
+  -e VIP_SESSION_DAYS=30 \
+  -e ONLINE_BASE_COUNT=0 \
+  douyin-parser
 ```
 
-启动容器：
+检查：
 
 ```bash
-docker run -d --name douyin-parser -p 8000:8000 douyin-parser
+curl http://127.0.0.1:8000/healthz
 ```
 
-访问：
+## 3. Nginx 绑定域名
+
+创建配置：
+
+```bash
+sudo tee /etc/nginx/sites-available/dy.devforai.cn >/dev/null <<'EOF'
+server {
+  listen 80;
+  server_name dy.devforai.cn;
+
+  client_max_body_size 20m;
+
+  location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Range $http_range;
+    proxy_set_header If-Range $http_if_range;
+    proxy_buffering off;
+  }
+}
+EOF
+
+sudo ln -sf /etc/nginx/sites-available/dy.devforai.cn /etc/nginx/sites-enabled/dy.devforai.cn
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+浏览器访问：
 
 ```text
-http://服务器IP:8000/api/v1/parse?url=https://v.douyin.com/xxxx/
+http://dy.devforai.cn
 ```
 
-停止容器：
+## 4. HTTPS
+
+如果服务器已安装 Certbot：
 
 ```bash
-docker stop douyin-parser
-docker rm douyin-parser
+sudo certbot --nginx -d dy.devforai.cn
 ```
 
-本地 Docker 验证：
-
-```bash
-pnpm verify:docker
-```
-
-## 5. Cloudflare Workers 部署
-
-登录 Cloudflare：
-
-```bash
-npx wrangler login
-```
-
-先做一次 dry-run 检查：
-
-```bash
-npx wrangler deploy --dry-run --outdir .wrangler-dry-run
-```
-
-正式部署：
-
-```bash
-npx wrangler deploy
-```
-
-入口文件：
+HTTPS 完成后访问：
 
 ```text
-src/worker.ts
+https://dy.devforai.cn
 ```
 
-## 6. Deno Deploy 部署
-
-Deno 入口文件：
-
-```text
-src/deno.ts
-```
-
-部署时选择该文件作为入口即可。
-
-本地 Deno 检查：
+## 5. 更新版本
 
 ```bash
-npx deno check src/deno.ts
-pnpm smoke:deno-real
+cd /opt/douyin-parser
+git pull
+docker build -t douyin-parser .
+docker rm -f douyin-parser 2>/dev/null || true
+docker run -d \
+  --name douyin-parser \
+  --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 \
+  -e PORT=8000 \
+  -e DATABASE_URL=/app/.data/app.db \
+  -e VIP_INIT_CODES="请改成你的激活码1,请改成你的激活码2" \
+  -e VIP_SESSION_DAYS=30 \
+  -e ONLINE_BASE_COUNT=0 \
+  douyin-parser
 ```
 
-## 7. 常用接口
-
-规范接口：
-
-```text
-GET /api/v1/parse?url=<抖音链接>
-```
-
-兼容接口：
-
-```text
-GET /?url=<抖音链接>
-GET /?data&url=<抖音链接>
-GET /api/hello?url=<抖音链接>
-GET /api/hello?data&url=<抖音链接>
-```
-
-## 8. 上线前验证
-
-推荐执行：
+## 6. 常用接口检查
 
 ```bash
-pnpm verify
+curl "https://dy.devforai.cn/api/v1/parse?url=https://v.douyin.com/xxxx/"
+curl "https://dy.devforai.cn/api/v1/online"
+curl -X POST "https://dy.devforai.cn/api/v1/vip/activate" \
+  -H "Content-Type: application/json" \
+  -d '{"code":"你的激活码"}'
 ```
 
-它会检查：
+## 7. 环境变量
 
-- 单元测试
-- TypeScript 构建
-- 真实抖音视频解析
-- 真实抖音图文解析
-- Node 服务
-- Deno 服务
-- Vercel Dev
-- Vercel 生产远端
-- Docker 容器
-- Cloudflare Worker dry-run
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PORT` | `8000` | 服务监听端口 |
+| `DATABASE_URL` | `.data/app.db` | 会员激活码 SQLite 数据库路径 |
+| `VIP_INIT_CODES` | `VIP-DEMO-2026` | 初始激活码，逗号分隔 |
+| `VIP_SESSION_DAYS` | `30` | 会员会话有效天数 |
+| `ONLINE_BASE_COUNT` | `0` | 在线人数基础值 |
 
-如果只想快速验证生产域名：
+## 8. 页面功能
 
-```bash
-VERCEL_REMOTE_BASE_URL=https://你的域名.vercel.app pnpm verify:vercel-remote
-```
-
-## 9. 当前已验证生产地址
-
-```text
-https://douyin-parser-allen.vercel.app
-```
-
-示例：
-
-```text
-https://douyin-parser-allen.vercel.app/api/v1/parse?url=https://v.douyin.com/xxxx/
-```
-
-## 10. 常见问题
-
-### Vercel 部署后 500
-
-先看日志：
-
-```bash
-npx vercel logs https://你的域名.vercel.app
-```
-
-然后重新构建部署：
-
-```bash
-pnpm build
-npx vercel deploy --prod
-```
-
-### Docker 里请求失败
-
-先确认本机 Docker 正常：
-
-```bash
-docker version
-```
-
-再执行：
-
-```bash
-pnpm verify:docker
-```
-
-### 直链浏览器不能直接播放
-
-有些 `douyinvod` 直链会限制浏览器热链播放，但接口返回的直链是真实可访问的。程序内验证会用正确请求头做 Range 校验。
+- 首页：输入或粘贴抖音分享链接。
+- 自动识别：点击“启用剪贴板识别”后，复制链接会自动填入并解析。
+- 预览：解析后使用同源代理播放视频。
+- 下载：解析成功后自动下载，也可点击“下载视频”。
+- 批量：激活会员后，输入主页链接，先获取数量，再输入下载数量和并发数。

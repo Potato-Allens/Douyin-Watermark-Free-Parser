@@ -11,8 +11,18 @@ export interface DouyinVideoInfo {
   desc: string | null;
   create_time: string | null;
   video_url: string | null;
+  cover_url: string | null;
+  music_title: string | null;
+  music_author: string | null;
   type: "video" | "img" | null;
   image_url_list: string[];
+}
+
+export interface ParsedMusicInfo {
+  title: string | null;
+  author: string | null;
+  cover_url: string | null;
+  play_url: string | null;
 }
 
 export interface ParsedDouyinInfo {
@@ -39,7 +49,14 @@ export interface ParsedDouyinInfo {
   media: {
     type: MediaType;
     video_url: string | null;
+    cover_url: string | null;
     image_url_list: string[];
+  };
+  music: ParsedMusicInfo;
+  download: {
+    video_proxy_url: string | null;
+    download_url: string | null;
+    filename: string | null;
   };
   compat: DouyinVideoInfo;
 }

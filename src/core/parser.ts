@@ -1,5 +1,5 @@
 import { DouyinServiceError } from "./errors.ts";
-import type { DouyinVideoInfo, FetchLike, MediaType, ParsedDouyinInfo, ParseHtmlOptions, ParseOptions } from "./types.ts";
+import type { DouyinVideoInfo, FetchLike, MediaType, ParsedDouyinInfo, ParsedMusicInfo, ParseHtmlOptions, ParseOptions } from "./types.ts";
 
 const WEB_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 11; SAMSUNG SM-G973U) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/14.2 Chrome/87.0.4280.141 Mobile Safari/537.36";
@@ -58,6 +58,20 @@ interface AwemeItem {
     play_addr_h264?: AwemeAddress;
     play_addr_lowbr?: AwemeAddress;
     play_addr_bytevc1?: AwemeAddress;
+    cover?: unknown;
+    origin_cover?: unknown;
+    dynamic_cover?: unknown;
+  };
+  music?: Record<string, unknown> & {
+    title?: string;
+    author?: string;
+    author_deleted?: boolean;
+    owner_nickname?: string;
+    play_url?: AwemeAddress;
+    cover_hd?: unknown;
+    cover_large?: unknown;
+    cover_medium?: unknown;
+    cover_thumb?: unknown;
   };
   images?: unknown[];
   image_infos?: unknown[];
@@ -69,6 +83,8 @@ export function parseDouyinHtml(html: string, sourceUrlOrOptions?: string | Pars
 
   const videoId = findVideoId(text);
   const imageUrlList = collectImageUrls(text);
+  const coverUrl = findCoverUrlInText(text);
+  const music = findMusicInfoInText(text);
   const videoUrl = videoId ? FALLBACK_VIDEO_PLAY_URL.replace("%s", encodeURIComponent(videoId)) : null;
   const mediaType: MediaType = videoId ? "video" : imageUrlList.length > 0 ? "image" : "unknown";
 
@@ -97,7 +113,9 @@ export function parseDouyinHtml(html: string, sourceUrlOrOptions?: string | Pars
     createTimestamp,
     mediaType,
     videoUrl,
-    imageUrlList,
+    coverUrl,
+    imageUrlList: mediaType === "image" ? imageUrlList : [],
+    music,
   });
 }
 
@@ -291,6 +309,8 @@ async function parseAwemeItem(aweme: AwemeItem, resolved: ResolvedInput, options
   const awemeId = aweme.aweme_id ?? resolved.awemeId;
   const videoCandidates = collectVideoCandidates(aweme);
   const imageUrlList = collectImageCandidatesFromAweme(aweme);
+  const coverUrl = collectCoverUrlFromAweme(aweme) ?? imageUrlList[0] ?? null;
+  const music = collectMusicInfoFromAweme(aweme);
   const isImageAweme = aweme.aweme_type === 68 || (imageUrlList.length > 0 && aweme.media_type !== 4);
   const mediaType: MediaType =
     imageUrlList.length > 0 && isImageAweme ? "image" : videoCandidates.length > 0 ? "video" : imageUrlList.length > 0 ? "image" : "unknown";
@@ -317,7 +337,9 @@ async function parseAwemeItem(aweme: AwemeItem, resolved: ResolvedInput, options
     createTimestamp: toNullableNumber(aweme.create_time),
     mediaType,
     videoUrl,
+    coverUrl,
     imageUrlList: verifiedImages,
+    music,
   });
 }
 
@@ -344,6 +366,40 @@ function collectImageCandidatesFromAweme(aweme: AwemeItem): string[] {
     for (const value of container ?? []) collectBestImageUrl(value, result);
   }
   return result;
+}
+
+function collectCoverUrlFromAweme(aweme: AwemeItem): string | null {
+  const result: string[] = [];
+  for (const value of [
+    aweme.video?.cover,
+    aweme.video?.origin_cover,
+    aweme.video?.dynamic_cover,
+    aweme.music?.cover_hd,
+    aweme.music?.cover_large,
+    aweme.music?.cover_medium,
+    aweme.music?.cover_thumb,
+  ]) {
+    collectBestImageUrl(value, result);
+  }
+  return result[0] ?? null;
+}
+
+function collectMusicInfoFromAweme(aweme: AwemeItem): ParsedMusicInfo {
+  const covers: string[] = [];
+  for (const value of [aweme.music?.cover_hd, aweme.music?.cover_large, aweme.music?.cover_medium, aweme.music?.cover_thumb]) {
+    collectBestImageUrl(value, covers);
+  }
+  const playUrls: string[] = [];
+  for (const url of aweme.music?.play_url?.url_list ?? []) {
+    const cleaned = cleanUrl(url);
+    if (cleaned) pushCleanUnique(playUrls, cleaned);
+  }
+  return {
+    title: toNullableString(aweme.music?.title),
+    author: toNullableString(aweme.music?.author) ?? toNullableString(aweme.music?.owner_nickname),
+    cover_url: covers[0] ?? null,
+    play_url: playUrls[0] ?? null,
+  };
 }
 
 async function chooseVideoUrl(candidates: string[], options: ParseOptions, validate: boolean): Promise<string> {
@@ -605,10 +661,13 @@ function buildParsedInfo(input: {
   createTimestamp: number | null;
   mediaType: MediaType;
   videoUrl: string | null;
+  coverUrl: string | null;
   imageUrlList: string[];
+  music: ParsedMusicInfo;
 }): ParsedDouyinInfo {
   const awemeId = input.awemeId ?? null;
   const createdAt = input.createTimestamp === null ? null : new Date(input.createTimestamp * 1000).toISOString();
+  const filename = input.mediaType === "video" ? (awemeId ? `douyin-${awemeId}.mp4` : "douyin-video.mp4") : null;
   const compat: DouyinVideoInfo = {
     aweme_id: awemeId,
     comment_count: input.commentCount,
@@ -620,6 +679,9 @@ function buildParsedInfo(input: {
     desc: input.desc,
     create_time: input.createTimestamp === null ? null : formatCompatDate(new Date(input.createTimestamp * 1000)),
     video_url: input.videoUrl,
+    cover_url: input.coverUrl,
+    music_title: input.music.title,
+    music_author: input.music.author,
     type: input.mediaType === "video" ? "video" : input.mediaType === "image" ? "img" : null,
     image_url_list: input.imageUrlList,
   };
@@ -648,7 +710,14 @@ function buildParsedInfo(input: {
     media: {
       type: input.mediaType,
       video_url: input.videoUrl,
+      cover_url: input.coverUrl,
       image_url_list: input.imageUrlList,
+    },
+    music: input.music,
+    download: {
+      video_proxy_url: null,
+      download_url: null,
+      filename,
     },
     compat,
   };
@@ -723,6 +792,45 @@ function collectImageUrls(text: string): string[] {
     }
   }
   return urls;
+}
+
+function findCoverUrlInText(text: string): string | null {
+  const sections = [
+    findObjectSection(text, "cover"),
+    findObjectSection(text, "origin_cover"),
+    findObjectSection(text, "dynamic_cover"),
+    findObjectSection(text, "cover_large"),
+    findObjectSection(text, "cover_medium"),
+    findObjectSection(text, "cover_thumb"),
+  ];
+  for (const section of sections) {
+    if (!section) continue;
+    const candidates = collectImageUrls(section);
+    if (candidates[0]) return candidates[0];
+  }
+  return collectImageUrls(text)[0] ?? null;
+}
+
+function findMusicInfoInText(text: string): ParsedMusicInfo {
+  const section = findObjectSection(text, "music") ?? "";
+  const coverCandidates = section ? collectImageUrls(section) : [];
+  const playCandidates: string[] = [];
+  if (section) collectUrlListsFromText(section, playCandidates, (url) => /music|audio|mime_type=audio|\.mp3|\.m4a/i.test(url));
+  return {
+    title: section ? findStringField(section, "title") : null,
+    author: section ? findStringField(section, "author") ?? findStringField(section, "owner_nickname") : null,
+    cover_url: coverCandidates[0] ?? null,
+    play_url: playCandidates[0] ?? null,
+  };
+}
+
+function collectUrlListsFromText(text: string, output: string[], predicate: (url: string) => boolean): void {
+  const rawUrlRegex = /"((?:https?:)?\/\/[^"\\]*(?:\\.[^"\\]*)*)"/g;
+  let urlMatch: RegExpExecArray | null;
+  while ((urlMatch = rawUrlRegex.exec(text)) !== null) {
+    const decoded = cleanUrl(urlMatch[1]);
+    if (decoded && predicate(decoded)) pushCleanUnique(output, decoded);
+  }
 }
 
 function collectUrlLists(value: unknown, output: string[], predicate: (url: string) => boolean): void {

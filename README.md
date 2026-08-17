@@ -1,89 +1,72 @@
 # Douyin Watermark-Free Parser
 
-基于 **TypeScript + Hono** 开发的抖音视频/图文解析服务，提供兼容接口、规范化 v1 数据接口和 SDK，支持 Node、Docker、Vercel、Cloudflare Workers、Deno Deploy 多运行时部署。
+抖音单条视频/图文解析服务，内置抖音风格 Web UI、规范 API、兼容接口、视频预览代理、下载代理、在线人数统计、会员激活与主页批量解析任务。
 
 ## 功能
 
-- 解析抖音短链、分享链接、视频详情页链接。
-- 返回真实无水印视频直链，并校验媒体资源可访问。
-- 支持图文内容解析，返回去重后的图片列表。
-- 兼容参考项目接口：`/?url=`、`/?data&url=`、`/api/hello?...`。
-- 新增规范化接口：`/api/v1/parse?url=`。
-- SDK 导出：`parseDouyinUrl`、`getNoWatermarkUrl`、`parseDouyinHtml`。
-- 支持 Node、Docker、Vercel、Cloudflare Workers、Deno Deploy。
+- 单条解析：粘贴抖音分享文本、短链或详情页链接，自动解析无水印视频地址。
+- 自动预览：前端使用同源 `/api/v1/media` 代理播放，解决部分直链浏览器不能播放的问题。
+- 自动下载：解析成功后可自动触发 `/api/v1/download` 下载。
+- 作品信息：返回标题/介绍、作者、点赞、评论、转发、收藏、封面、背景音乐。
+- 图文解析：返回去重后的图片列表。
+- 会员批量：激活码激活后，可输入主页链接，先获取作品数量，再按数量和并发数创建批量解析任务。
+- 在线人数：前端心跳上报，接口返回当前在线人数。
+- 多运行时：Node/Docker、Vercel、Cloudflare Workers、Deno Deploy。
 
-## 快速开始
+## 快速启动
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-默认监听：
+访问：
 
 ```text
 http://localhost:8000
 ```
 
-示例：
+## Web UI
 
-```bash
-curl "http://localhost:8000/?url=https%3A%2F%2Fv.douyin.com%2Fxxxx%2F"
-curl "http://localhost:8000/?data&url=https%3A%2F%2Fv.douyin.com%2Fxxxx%2F"
-curl "http://localhost:8000/api/v1/parse?url=https%3A%2F%2Fv.douyin.com%2Fxxxx%2F"
+打开首页后，直接粘贴抖音分享链接即可自动识别：
+
+```text
+https://v.douyin.com/xxxx/
 ```
 
-## 兼容接口
+页面会自动展示：
 
-### `GET /?url=<douyin-url>`
+- 视频预览
+- 下载按钮
+- 点赞/评论/转发/收藏
+- 标题/介绍
+- 背景音乐
+- 封面
+- 当前在线人数
+- 会员批量解析入口
+
+## API
+
+### 兼容接口
+
+```http
+GET /?url=<douyin-url>
+```
 
 返回 `text/plain` 无水印视频直链。
 
-```text
-https://v11-cold-src.douyinvod.com/.../video/tos/.../?mime_type=video_mp4&...
+```http
+GET /?data&url=<douyin-url>
+GET /api/hello?data&url=<douyin-url>
 ```
 
-图文内容没有单一视频直链时返回：
+返回兼容 JSON。
 
-```json
-{
-  "ok": false,
-  "code": "UNSUPPORTED_CONTENT",
-  "message": "image content has no video url",
-  "error": {
-    "detail": ""
-  }
-}
+### 规范接口
+
+```http
+GET /api/v1/parse?url=<douyin-url>
 ```
-
-### `GET /?data&url=<douyin-url>`
-
-返回兼容格式 JSON。
-
-```json
-{
-  "aweme_id": "6914948781100338440",
-  "comment_count": 100943,
-  "digg_count": 2902205,
-  "share_count": 107283,
-  "collect_count": 73864,
-  "nickname": "Real机智张",
-  "signature": "24/7 REAL",
-  "desc": "让你在几秒钟之内记住我",
-  "create_time": "2021-01-07 09:33:13",
-  "video_url": "https://...",
-  "type": "video",
-  "image_url_list": []
-}
-```
-
-### `GET /api/hello?...`
-
-与 `/` 行为完全一致，用于 Vercel 兼容入口。
-
-## 规范化 v1 接口
-
-### `GET /api/v1/parse?url=<douyin-url>`
 
 成功响应：
 
@@ -93,31 +76,13 @@ https://v11-cold-src.douyinvod.com/.../video/tos/.../?mime_type=video_mp4&...
   "code": "OK",
   "message": "success",
   "data": {
-    "source": {
-      "input_url": "",
-      "resolved_url": "",
-      "aweme_id": ""
-    },
-    "author": {
-      "nickname": null,
-      "signature": null
-    },
-    "stats": {
-      "comment_count": null,
-      "digg_count": null,
-      "share_count": null,
-      "collect_count": null
-    },
-    "content": {
-      "desc": null,
-      "create_timestamp": null,
-      "created_at": null
-    },
-    "media": {
-      "type": "video",
-      "video_url": null,
-      "image_url_list": []
-    },
+    "source": { "input_url": "", "resolved_url": "", "aweme_id": "" },
+    "author": { "nickname": null, "signature": null },
+    "stats": { "comment_count": null, "digg_count": null, "share_count": null, "collect_count": null },
+    "content": { "desc": null, "create_timestamp": null, "created_at": null },
+    "media": { "type": "video", "video_url": null, "cover_url": null, "image_url_list": [] },
+    "music": { "title": null, "author": null, "cover_url": null, "play_url": null },
+    "download": { "video_proxy_url": null, "download_url": null, "filename": null },
     "compat": {}
   }
 }
@@ -130,9 +95,7 @@ https://v11-cold-src.douyinvod.com/.../video/tos/.../?mime_type=video_mp4&...
   "ok": false,
   "code": "MISSING_URL",
   "message": "url query parameter is required",
-  "error": {
-    "detail": ""
-  }
+  "error": { "detail": "" }
 }
 ```
 
@@ -145,36 +108,102 @@ https://v11-cold-src.douyinvod.com/.../video/tos/.../?mime_type=video_mp4&...
 - `UNSUPPORTED_CONTENT`
 - `INTERNAL_ERROR`
 
+### 预览/下载代理
+
+```http
+GET /api/v1/media?url=<video-url>
+GET /api/v1/download?url=<video-url>&filename=douyin.mp4
+```
+
+- `/media`：同源预览，支持 Range。
+- `/download`：附件下载，自动设置文件名。
+
+### 在线人数
+
+```http
+GET /api/v1/online
+POST /api/v1/online/ping
+```
+
+`POST /api/v1/online/ping` 示例：
+
+```json
+{ "client_id": "browser-session-id" }
+```
+
+### 会员激活
+
+默认初始激活码：
+
+```text
+VIP-DEMO-2026
+```
+
+生产环境请通过环境变量覆盖：
+
+```bash
+VIP_INIT_CODES="CODE-A,CODE-B,CODE-C"
+VIP_SESSION_DAYS=30
+DATABASE_URL=".data/app.db"
+```
+
+激活：
+
+```http
+POST /api/v1/vip/activate
+Content-Type: application/json
+
+{ "code": "CODE-A" }
+```
+
+状态：
+
+```http
+GET /api/v1/vip/status
+Authorization: Bearer <vip-token>
+```
+
+### 会员批量解析
+
+获取主页作品数量：
+
+```http
+POST /api/v1/batch/inspect
+Authorization: Bearer <vip-token>
+Content-Type: application/json
+
+{ "url": "https://www.douyin.com/user/xxxx" }
+```
+
+创建批量任务：
+
+```http
+POST /api/v1/batch/start
+Authorization: Bearer <vip-token>
+Content-Type: application/json
+
+{
+  "url": "https://www.douyin.com/user/xxxx",
+  "count": 10,
+  "concurrency": 3
+}
+```
+
+查询任务：
+
+```http
+GET /api/v1/batch/<task-id>
+Authorization: Bearer <vip-token>
+```
+
 ## SDK
 
 ```ts
-import { getNoWatermarkUrl, parseDouyinHtml, parseDouyinUrl } from "./src/index.ts";
+import { getNoWatermarkUrl, parseDouyinHtml, parseDouyinUrl } from "douyin-watermark-free-parser";
 
-const result = await parseDouyinUrl("https://v.douyin.com/xxxx/");
+const parsed = await parseDouyinUrl("https://v.douyin.com/xxxx/");
 const videoUrl = await getNoWatermarkUrl("https://v.douyin.com/xxxx/");
-const parsed = parseDouyinHtml("<html>...</html>", "https://www.douyin.com/video/xxxx");
-```
-
-## 项目结构
-
-```text
-src/
-  app.ts              Hono HTTP 应用
-  node.ts             Node 入口
-  worker.ts           Cloudflare Workers 入口
-  deno.ts             Deno Deploy 入口
-  core/
-    parser.ts         核心解析逻辑
-    types.ts          类型定义
-    errors.ts         统一错误
-api/
-  hello.ts            Vercel 兼容入口
-  v1/parse.ts         Vercel v1 入口
-scripts/
-  verify.ts           全量验证
-  *-smoke.ts          真实链路 smoke test
-tests/
-  *.test.ts           单元/API 测试
+const fixture = parseDouyinHtml("<html>...</html>", "https://www.douyin.com/video/xxxx");
 ```
 
 ## 验证
@@ -182,40 +211,8 @@ tests/
 ```bash
 pnpm test
 pnpm build
-pnpm smoke
-pnpm smoke:image-real
-pnpm smoke:server-real
-pnpm smoke:deno-real
-pnpm smoke:vercel-dev
-pnpm smoke:vercel-remote
-pnpm verify
+pnpm smoke:node
 ```
-
-默认真实视频 smoke 输入：
-
-```bash
-pnpm smoke
-```
-
-指定真实图文链接：
-
-```powershell
-$env:SMOKE_DOUYIN_IMAGE_URL="https://www.douyin.com/note/xxxx"
-pnpm smoke:image-real
-```
-
-`pnpm verify` 会覆盖：
-
-- 单元测试
-- TypeScript 类型检查
-- 真实视频解析
-- 真实图文解析
-- Node HTTP 服务
-- Deno HTTP 服务
-- Vercel Dev 本地服务
-- Vercel 生产远端服务
-- Docker 容器服务
-- Cloudflare Worker dry-run bundle
 
 ## 部署
 
@@ -225,89 +222,36 @@ pnpm smoke:image-real
 DEPLOYMENT.md
 ```
 
-### Node
-
-```bash
-pnpm start
-```
-
-### Docker
+Docker 快速启动：
 
 ```bash
 docker build -t douyin-parser .
-docker run -p 8000:8000 douyin-parser
-pnpm verify:docker
+docker run -d --name douyin-parser -p 8000:8000 \
+  -e VIP_INIT_CODES="CODE-A,CODE-B" \
+  -e DATABASE_URL="/app/.data/app.db" \
+  douyin-parser
 ```
 
-`pnpm verify:docker` 会构建镜像、启动临时容器、请求真实抖音链接，并校验四个 HTTP 接口与视频 Range 响应。Windows 环境中的 CA 会通过 BuildKit secret 注入容器，避免公司代理或本机证书链导致 TLS 校验失败。`.docker-ca/` 已加入 `.gitignore`。
-
-### Vercel
-
-项目包含 `api/hello.ts`、`api/v1/parse.ts` 和 `vercel.json`，导入后可直接部署。
-
-访问示例：
+## 目录
 
 ```text
-https://your-domain.vercel.app/api/hello?url=https://v.douyin.com/xxxx/
-https://your-domain.vercel.app/api/v1/parse?url=https://v.douyin.com/xxxx/
-```
-
-本地 Vercel build：
-
-```bash
-pnpm verify:vercel
-```
-
-本地 Vercel Dev 真接口校验：
-
-```bash
-pnpm verify:vercel-dev
-```
-
-生产远端真接口校验：
-
-```bash
-pnpm verify:vercel-remote
-```
-
-默认校验：
-
-```text
-https://douyin-parser-allen.vercel.app
-```
-
-如需校验其它部署：
-
-```bash
-VERCEL_REMOTE_BASE_URL=https://your-domain.vercel.app pnpm verify:vercel-remote
-```
-
-### Cloudflare Workers
-
-```bash
-npx wrangler deploy
-npx wrangler deploy --dry-run --outdir .wrangler-dry-run
-```
-
-入口：`src/worker.ts`。
-
-### Deno Deploy
-
-入口：`src/deno.ts`。
-
-## 数据接口约定
-
-- 所有响应字段固定存在。
-- 未解析到的标量字段返回 `null`。
-- 列表字段返回数组，空列表返回 `[]`。
-- v1 接口使用 ISO `created_at`。
-- 兼容接口保留 `create_time` 字符串。
-- 遇到移动分享页的 ByteDance WAF proof-of-work 页面时，会计算 `_wafchallengeid` 后重试一次；若重试页面仍没有真实媒体字段，则返回 `PARSE_FAILED`，不会构造虚假媒体 URL。
-
-## 验证记录
-
-完整验证过程和结果见：
-
-```text
-VERIFICATION.md
+src/
+  app.ts              Hono 应用与 API 路由
+  ui.ts               抖音风格前端页面
+  node.ts             Node/Docker 入口
+  worker.ts           Cloudflare Workers 入口
+  deno.ts             Deno Deploy 入口
+  core/
+    parser.ts         单条解析核心
+    media-proxy.ts    视频预览/下载代理
+    profile.ts        主页作品探测
+    batch.ts          批量任务
+    vip.ts            激活码与会员会话
+    types.ts          类型定义
+    errors.ts         统一错误
+api/
+  hello.ts            Vercel 入口
+  [...path].ts        Vercel API 兜底入口
+tests/
+  *.test.ts           单元测试/API 测试
 ```

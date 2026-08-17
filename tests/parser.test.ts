@@ -15,6 +15,10 @@ describe("douyin parser", () => {
     expect(parsed.media.video_url).toBe(
       "https://aweme.snssdk.com/aweme/v1/play/?video_id=v0200fg10000abc123douyin&ratio=720p&line=0",
     );
+    expect(parsed.media.cover_url).toBe("https://p3-sign.douyinpic.com/tos-cn-i-0813/cover.jpeg");
+    expect(parsed.music).toMatchObject({ title: "示例背景音乐", author: "音乐作者" });
+    expect(parsed.compat.cover_url).toBe(parsed.media.cover_url);
+    expect(parsed.compat.music_title).toBe("示例背景音乐");
     expect(parsed.compat.type).toBe("video");
     expect(parsed.compat.image_url_list).toEqual([]);
   });

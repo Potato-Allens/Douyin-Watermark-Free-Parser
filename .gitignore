@@ -13,3 +13,4 @@ api/_generated/*.js
 out/
 preview-*.html
 .deploy/
+.data/
