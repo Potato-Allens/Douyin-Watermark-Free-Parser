@@ -221,4 +221,65 @@ describe("api routes", () => {
       else process.env.ADMIN_TOKEN = oldToken;
     }
   });
+
+  it("generates batch AI scripts and exports JSON/text artifacts", async () => {
+    const store = await createMemoryVipStore(["BATCH-AI-1"]);
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/aweme/v1/web/aweme/post/")) {
+        return new Response(JSON.stringify({ total: 1, aweme_list: [{ aweme_id: "7673000000000000001" }] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/user/")) {
+        return new Response(`<html>{"sec_uid":"SEC_TEST","aweme_id":"7673000000000000001"}</html>`, {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response(VIDEO_HTML, { headers: { "content-type": "text/html" } });
+    };
+    const app = createApp({ fetcher, vipStore: store, cacheTtlMs: 0 });
+    const register = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ code: "BATCH-AI-1", username: "batch_ai_user", password: "password123" }),
+    });
+    const token = (await register.json()).data.token;
+    const headers = { authorization: `Bearer ${token}` };
+
+    const started = await app.request("/api/v1/batch/start", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_TEST", count: 1, concurrency: 1 }),
+    });
+    const taskId = (await started.json()).data.id;
+    let taskBody: any = null;
+    for (let index = 0; index < 20; index += 1) {
+      const task = await app.request(`/api/v1/batch/${taskId}`, { headers });
+      taskBody = await task.json();
+      if (taskBody.data.status === "completed" || taskBody.data.status === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(taskBody.data.status).toBe("completed");
+    expect(taskBody.data.success_count).toBe(1);
+
+    const ai = await app.request(`/api/v1/batch/${taskId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ prompt: "更口语化", count: 1 }),
+    });
+    const aiBody = await ai.json();
+    expect(ai.status).toBe(200);
+    expect(aiBody.data.generated_count).toBe(1);
+    expect(aiBody.data.items[0].ai_copy.tags.length).toBeGreaterThan(0);
+
+    const exportedJson = await app.request(`/api/v1/batch/${taskId}/export?type=json`, { headers });
+    const exportedBody = await exportedJson.json();
+    expect(exportedJson.headers.get("content-disposition")).toContain("attachment");
+    expect(exportedBody.items[0].ai_copy).toBeTruthy();
+
+    const scripts = await app.request(`/api/v1/batch/${taskId}/export?type=scripts`, { headers });
+    const scriptText = await scripts.text();
+    expect(scripts.headers.get("content-type")).toContain("text/plain");
+    expect(scriptText).toContain("aweme_id: 7673000000000000001");
+  });
 });

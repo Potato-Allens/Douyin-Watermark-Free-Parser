@@ -413,3 +413,38 @@ POST https://dy.devforai.cn/api/v1/auth/register
 GET https://dy.devforai.cn/api/v1/me Authorization: Bearer <member-token>
 ```
 Result: admin code creation HTTP 200; registration HTTP 200; `/api/v1/me` returned `session_type: member`, plan `standard`, exit status 0.
+## Batch AI Export Update - 2026-08-17 22:01 Asia/Shanghai
+
+Scope:
+- Added persistent batch task file `.data/batch-tasks.json`.
+- Added batch item metadata fields: author, music, stats, AI copy and comments.
+- Added `POST /api/v1/batch/:id/ai` for batch oral-copy/title/description/tag generation.
+- Added `GET /api/v1/batch/:id/export?type=json|scripts|covers|comments`.
+- Added frontend buttons for batch AI generation and exports.
+
+Changed paths:
+- `src/core/batch.ts`
+- `src/app.ts`
+- `src/ui.ts`
+- `tests/api.test.ts`
+- `README.md`
+- `docs/short-video-creator-workbench-dev-plan.md`
+
+Verification commands:
+
+```powershell
+pnpm test
+```
+Result: 2 test files passed, 24 tests passed, exit status 0.
+
+```powershell
+pnpm build
+```
+Result: `tsx scripts/build-vercel.ts && pnpm typecheck`, `tsc --noEmit`, exit status 0.
+
+Batch API coverage:
+- Test fixture starts a profile batch task from a mocked Douyin homepage.
+- Polls `/api/v1/batch/:id` until completion.
+- Calls `/api/v1/batch/:id/ai` and verifies `generated_count = 1`.
+- Calls `/api/v1/batch/:id/export?type=json` and verifies attached JSON contains `ai_copy`.
+- Calls `/api/v1/batch/:id/export?type=scripts` and verifies text contains the expected `aweme_id`.

@@ -11,11 +11,12 @@ import {
   makeErrorResponse,
   parseDouyinUrl,
   proxyMediaUrl,
+  saveBatchTask,
   startBatchTask,
   testLlmSettings,
   toServiceError,
 } from "./core/index.ts";
-import type { ApiSuccessResponse, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, VipSession, VipStore } from "./core/index.ts";
+import type { ApiSuccessResponse, BatchItem, BatchTask, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, VipSession, VipStore } from "./core/index.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import { renderHomePage } from "./ui.ts";
 
@@ -293,9 +294,61 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/v1/batch/:id", async (c) => {
     try {
       await requireVip(c, await getStore());
-      const task = getBatchTask(c.req.param("id"));
+      const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       return c.json(success(task));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/batch/:id/ai", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      const session = await requireVip(c, await getStore());
+      const task = await getBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      const body = await readJsonBody(c);
+      const prompt = asString(body.prompt);
+      const mode = asString(body.mode) ?? "batch_script";
+      const limit = Math.min(parsePositiveInt(body.count, task.items.length), getBatchAiLimit(session));
+      const items = task.items.filter((item) => item.status === "success").slice(0, limit);
+      if (items.length === 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "batch task has no successful video item for AI copywriting", 409);
+      if (items.length > getBatchAiLimit(session)) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${getBatchAiLimit(session)} AI scripts per batch`, 403);
+      const aiQuota = getAiDailyQuota(session);
+      if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
+      enforceRateLimit(rateBuckets, `batch-ai:${session.code}:${getClientIp(c)}`, Math.max(1, Math.floor(aiQuota / 2)), 24 * 60 * 60 * 1000, items.length);
+
+      const results = [];
+      for (const item of items) {
+        const parsed = parsedFromBatchItem(task, item);
+        const ai = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
+        item.ai_copy = ai;
+        results.push({ aweme_id: item.aweme_id, title: item.title, ai_copy: ai });
+      }
+      await saveBatchTask(task);
+      await store.recordUsage({ kind: `batch_ai_${mode}`, user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/ai`, status: 200, detail: JSON.stringify({ count: results.length }) });
+      return c.json(success({ task_id: task.id, generated_count: results.length, items: results }));
+    } catch (error) {
+      await store.recordUsage({ kind: "batch_ai", user_key: "unknown", ip: getClientIp(c), path: `/api/v1/batch/${c.req.param("id")}/ai`, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/v1/batch/:id/export", async (c) => {
+    try {
+      const session = await requireVip(c, await getStore());
+      const task = await getBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      const requestUrl = new URL(c.req.url);
+      const type = requestUrl.searchParams.get("type") ?? "json";
+      if (type === "comments" && isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
+      }
+      if (type === "covers" && isMemberSession(session) && !session.plan.cover_batch_download) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include cover export", 403);
+      }
+      return batchExportResponse(task, type);
     } catch (error) {
       return jsonError(c, error);
     }
@@ -540,6 +593,150 @@ function decorateParsedInfo(parsed: ParsedDouyinInfo, requestUrl: string): Parse
   return copy;
 }
 
+function parsedFromBatchItem(task: BatchTask, item: BatchItem): ParsedDouyinInfo {
+  return {
+    source: {
+      input_url: `https://www.douyin.com/video/${item.aweme_id}`,
+      resolved_url: task.homepage_url,
+      aweme_id: item.aweme_id,
+    },
+    author: {
+      nickname: item.author_nickname,
+      signature: null,
+    },
+    stats: {
+      comment_count: item.stats.comment_count,
+      digg_count: item.stats.digg_count,
+      share_count: item.stats.share_count,
+      collect_count: item.stats.collect_count,
+    },
+    content: {
+      desc: item.title,
+      create_timestamp: null,
+      created_at: null,
+    },
+    media: {
+      type: item.video_url ? "video" : "unknown",
+      video_url: item.video_url,
+      cover_url: item.cover_url,
+      image_url_list: [],
+    },
+    music: {
+      title: item.music_title,
+      author: item.music_author,
+      cover_url: null,
+      play_url: null,
+    },
+    download: {
+      video_proxy_url: null,
+      download_url: item.download_url,
+      filename: `douyin-${item.aweme_id}.mp4`,
+    },
+    compat: {
+      aweme_id: item.aweme_id,
+      comment_count: item.stats.comment_count,
+      digg_count: item.stats.digg_count,
+      share_count: item.stats.share_count,
+      collect_count: item.stats.collect_count,
+      nickname: item.author_nickname,
+      signature: null,
+      desc: item.title,
+      create_time: null,
+      video_url: item.video_url,
+      cover_url: item.cover_url,
+      music_title: item.music_title,
+      music_author: item.music_author,
+      type: item.video_url ? "video" : null,
+      image_url_list: [],
+    },
+  };
+}
+
+function batchExportResponse(task: BatchTask, type: string): Response {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  if (type === "scripts") {
+    const lines = task.items
+      .filter((item) => item.ai_copy)
+      .map((item, index) =>
+        [
+          `# ${index + 1}. ${item.ai_copy?.title ?? item.title ?? item.aweme_id}`,
+          `aweme_id: ${item.aweme_id}`,
+          `title: ${item.ai_copy?.title ?? ""}`,
+          "",
+          item.ai_copy?.rewritten_script ?? "",
+          "",
+          `description: ${item.ai_copy?.description ?? ""}`,
+          `tags: ${(item.ai_copy?.tags ?? []).map((tag) => `#${tag}`).join(" ")}`,
+          "",
+        ].join("\n"),
+      )
+      .join("\n---\n");
+    return new Response(lines || "No AI scripts generated yet.", {
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "content-disposition": `attachment; filename="batch-${task.id}-scripts-${timestamp}.txt"`,
+      },
+    });
+  }
+  if (type === "covers") {
+    return jsonAttachment(
+      {
+        task_id: task.id,
+        homepage_url: task.homepage_url,
+        covers: task.items.filter((item) => item.cover_url).map((item) => ({ aweme_id: item.aweme_id, title: item.title, cover_url: item.cover_url })),
+      },
+      `batch-${task.id}-covers-${timestamp}.json`,
+    );
+  }
+  if (type === "comments") {
+    return jsonAttachment(
+      {
+        task_id: task.id,
+        homepage_url: task.homepage_url,
+        note: "comments are exported from collected task data; empty arrays mean no comment source has been collected for that item yet",
+        comments: task.items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })),
+      },
+      `batch-${task.id}-comments-${timestamp}.json`,
+    );
+  }
+  return jsonAttachment(
+    {
+      task_id: task.id,
+      homepage_url: task.homepage_url,
+      status: task.status,
+      requested_count: task.requested_count,
+      completed_count: task.completed_count,
+      success_count: task.success_count,
+      failed_count: task.failed_count,
+      items: task.items.map((item) => ({
+        aweme_id: item.aweme_id,
+        status: item.status,
+        title: item.title,
+        author_nickname: item.author_nickname,
+        cover_url: item.cover_url,
+        video_url: item.video_url,
+        download_url: item.download_url,
+        music_title: item.music_title,
+        music_author: item.music_author,
+        stats: item.stats,
+        ai_copy: item.ai_copy,
+        comments: item.comments,
+        error: item.error,
+      })),
+    },
+    `batch-${task.id}-full-${timestamp}.json`,
+  );
+}
+
+function jsonAttachment(value: unknown, filename: string): Response {
+  return new Response(JSON.stringify(value, null, 2), {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename}"`,
+    },
+  });
+}
+
 function buildFilename(parsed: ParsedDouyinInfo): string {
   return `douyin-${parsed.source.aweme_id ?? "video"}.mp4`;
 }
@@ -661,6 +858,10 @@ function getAiDailyQuota(session: VipSession | MemberSession): number {
   return permissionsForSession(session).ai_daily_quota;
 }
 
+function getBatchAiLimit(session: VipSession | MemberSession): number {
+  return permissionsForSession(session).batch_ai_limit;
+}
+
 function readVipToken(request: Request): string | null {
   const auth = request.headers.get("authorization") ?? "";
   const bearer = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim();
@@ -716,14 +917,17 @@ function getClientIp(c: Context): string {
   return firstForwardedHeader(c.req.header("x-forwarded-for")) ?? c.req.header("x-real-ip") ?? "0.0.0.0";
 }
 
-function enforceRateLimit(buckets: Map<string, { resetAt: number; count: number }>, key: string, limit: number, windowMs: number): void {
+function enforceRateLimit(buckets: Map<string, { resetAt: number; count: number }>, key: string, limit: number, windowMs: number, cost = 1): void {
   const now = Date.now();
   const bucket = buckets.get(key);
   if (!bucket || bucket.resetAt <= now) {
-    buckets.set(key, { resetAt: now + windowMs, count: 1 });
+    buckets.set(key, { resetAt: now + windowMs, count: cost });
+    if (cost > limit) {
+      throw new DouyinServiceError("UNSUPPORTED_CONTENT", "rate limit exceeded, please wait and retry", 429);
+    }
     return;
   }
-  bucket.count += 1;
+  bucket.count += cost;
   if (bucket.count > limit) {
     throw new DouyinServiceError("UNSUPPORTED_CONTENT", "rate limit exceeded, please wait and retry", 429);
   }
