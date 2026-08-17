@@ -60,6 +60,7 @@
 - 批量封面下载已落地：`GET /api/v1/batch/:id/export?type=covers_zip` 会打包封面文件和 `cover-manifest.json`，前台“导出封面”按钮直接下载 ZIP。
 - 批量 CSV 导出已落地：`items_csv` 导出作品表格，`scripts_csv` 导出口播文案表格，`comments_csv` 导出评论表格，便于运营二次处理。
 - 后台套餐权限编辑已补齐：套餐表单可独立配置批量解析上限、批量 AI 上限、每日 AI 额度、评论导出开关、封面批量下载开关、并发和队列优先级。
+- 限流拦截审计已补齐：解析、媒体代理、批量、AI 和评论接口触发限流时会写入 `rate_limited_*` 调用日志，并写入 `rate_limit_block` 安全审计，后台可直接查看。
 
 ## 2. 本次确认后的新增需求
 

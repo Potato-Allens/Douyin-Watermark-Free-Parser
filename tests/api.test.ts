@@ -202,6 +202,11 @@ describe("api routes", () => {
       expect(usage.status).toBe(200);
       expect(usageBody.data.some((entry: any) => entry.kind === "parse" && entry.status === 200)).toBe(true);
       expect(usageBody.data.some((entry: any) => entry.kind === "parse" && entry.status === 429)).toBe(true);
+      expect(usageBody.data.some((entry: any) => entry.kind === "rate_limited_parse" && entry.status === 429)).toBe(true);
+
+      const audit = await app.request("/api/admin/audit-logs?limit=10", { headers: { authorization: "Bearer usage-admin-token" } });
+      const auditBody = await audit.json();
+      expect(auditBody.data.some((entry: any) => entry.action === "rate_limit_block" && entry.detail.includes('"kind":"parse"'))).toBe(true);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;
@@ -422,6 +427,7 @@ describe("api routes", () => {
       const audit = await app.request("/api/admin/audit-logs?limit=5", { headers: { authorization: "Bearer rate-admin-token" } });
       const auditBody = await audit.json();
       expect(auditBody.data.some((entry: any) => entry.action === "rate_limits_save")).toBe(true);
+      expect(auditBody.data.some((entry: any) => entry.action === "rate_limit_block")).toBe(true);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;

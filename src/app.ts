@@ -76,8 +76,36 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   };
 
-  const enforcePublicRateLimit = (kind: string, c: Context, limit: number, windowMs = 60_000, cost = 1) => {
-    enforceRateLimit(rateBuckets, `${kind}:${getClientIp(c)}`, limit, windowMs, cost);
+  const recordRateLimitBlock = async (input: { kind: string; userKey?: string; ip: string; path: string; limit: number; windowMs: number; cost: number }) => {
+    const detail = JSON.stringify({ kind: input.kind, path: input.path, limit: input.limit, window_ms: input.windowMs, cost: input.cost });
+    await recordUsage({ kind: `rate_limited_${input.kind}`, user_key: input.userKey ?? "guest", ip: input.ip, path: input.path, status: 429, detail });
+    try {
+      await (await creatorStorePromise).recordAudit({ actor: input.userKey ?? "guest", action: "rate_limit_block", ip: input.ip, detail });
+    } catch {
+      // Audit logging must never mask the original rate-limit response.
+    }
+  };
+
+  const enforcePublicRateLimit = async (kind: string, c: Context, limit: number, windowMs = 60_000, cost = 1) => {
+    const ip = getClientIp(c);
+    const path = new URL(c.req.url).pathname;
+    try {
+      enforceRateLimit(rateBuckets, `${kind}:${ip}`, limit, windowMs, cost);
+    } catch (error) {
+      if (error instanceof DouyinServiceError && error.status === 429) await recordRateLimitBlock({ kind, ip, path, limit, windowMs, cost });
+      throw error;
+    }
+  };
+
+  const enforceMemberRateLimit = async (kind: string, c: Context, session: VipSession | MemberSession, limit: number, windowMs: number, cost = 1) => {
+    const ip = getClientIp(c);
+    const path = new URL(c.req.url).pathname;
+    try {
+      enforceRateLimit(rateBuckets, `${kind}:${session.code}:${ip}`, limit, windowMs, cost);
+    } catch (error) {
+      if (error instanceof DouyinServiceError && error.status === 429) await recordRateLimitBlock({ kind, userKey: session.code, ip, path, limit, windowMs, cost });
+      throw error;
+    }
   };
 
   const adminLoginKey = (ip: string, username: string | null) => `admin-login:${ip}:${username ?? "unknown"}`;
@@ -190,7 +218,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return handleCompat(c.req.url, parseForRequest, {
       before: async () => {
         await guardPublicAccess(c, "compat_parse");
-        enforcePublicRateLimit("compat_parse", c, (await getEffectiveRateLimits()).parse_per_minute);
+        await enforcePublicRateLimit("compat_parse", c, (await getEffectiveRateLimits()).parse_per_minute);
       },
       after: (status, detail) => recordUsage({ kind: "compat_parse", ip: getClientIp(c), path: "/", status, detail }),
     });
@@ -204,7 +232,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return handleCompat(c.req.url, parseForRequest, {
       before: async () => {
         await guardPublicAccess(c, "compat_parse");
-        enforcePublicRateLimit("compat_parse", c, (await getEffectiveRateLimits()).parse_per_minute);
+        await enforcePublicRateLimit("compat_parse", c, (await getEffectiveRateLimits()).parse_per_minute);
       },
       after: (status, detail) => recordUsage({ kind: "compat_parse", ip: getClientIp(c), path: "/api/hello", status, detail }),
     });
@@ -220,7 +248,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
     try {
       await guardPublicAccess(c, "parse");
-      enforcePublicRateLimit("parse", c, (await getEffectiveRateLimits()).parse_per_minute);
+      await enforcePublicRateLimit("parse", c, (await getEffectiveRateLimits()).parse_per_minute);
       const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
       await recordUsage({ kind: "parse", ip: getClientIp(c), path: "/api/v1/parse", status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, type: parsed.media.type }) });
       return c.json(success(parsed));
@@ -239,7 +267,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     try {
       await guardPublicAccess(c, "media_proxy");
-      enforcePublicRateLimit("media_proxy", c, (await getEffectiveRateLimits()).media_per_minute);
+      await enforcePublicRateLimit("media_proxy", c, (await getEffectiveRateLimits()).media_per_minute);
       const response = await proxyMediaUrl(mediaUrl, c.req.raw, "inline", requestUrl.searchParams.get("filename"));
       await recordUsage({ kind: "media_proxy", ip: getClientIp(c), path: "/api/v1/media", status: response.status, detail: safeUsageUrlDetail(mediaUrl) });
       return response;
@@ -258,7 +286,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     try {
       await guardPublicAccess(c, "download_proxy");
-      enforcePublicRateLimit("download_proxy", c, (await getEffectiveRateLimits()).media_per_minute);
+      await enforcePublicRateLimit("download_proxy", c, (await getEffectiveRateLimits()).media_per_minute);
       const response = await proxyMediaUrl(mediaUrl, c.req.raw, "attachment", requestUrl.searchParams.get("filename"));
       await recordUsage({ kind: "download_proxy", ip: getClientIp(c), path: "/api/v1/download", status: response.status, detail: safeUsageUrlDetail(mediaUrl) });
       return response;
@@ -401,7 +429,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
       const maxItems = Math.min(parsePositiveInt(body.count ?? body.max_items, getBatchParseLimit(session)), getBatchParseLimit(session));
-      enforceRateLimit(rateBuckets, `batch-inspect:${session.code}:${getClientIp(c)}`, (await getEffectiveRateLimits()).batch_per_hour, 60 * 60 * 1000);
+      await enforceMemberRateLimit("batch_inspect", c, session, (await getEffectiveRateLimits()).batch_per_hour, 60 * 60 * 1000);
       const data = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems });
       await recordUsage({ kind: "batch_inspect", user_key: session.code, ip: getClientIp(c), path: "/api/v1/batch/inspect", status: 200, detail: JSON.stringify({ requested_count: maxItems, available_count: data.available_count, total_count: data.total_count }) });
       return c.json(success(data));
@@ -421,7 +449,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
       const previewLimit = Math.min(parsePositiveInt(body.count, 8), getBatchParseLimit(session), 24);
-      enforceRateLimit(rateBuckets, `profile-preview:${session.code}:${getClientIp(c)}`, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      await enforceMemberRateLimit("profile_preview", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
       const inspect = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems: previewLimit });
       const ids = inspect.aweme_ids.slice(0, previewLimit);
       const publicRequestUrl = getPublicRequestUrl(c);
@@ -467,7 +495,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const maxCount = getBatchParseLimit(session);
       if (count > maxCount) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${maxCount} works per batch`, 403);
       const concurrency = Math.min(parsePositiveInt(body.concurrency, 3), getConcurrencyLimit(session));
-      enforceRateLimit(rateBuckets, `batch-start:${session.code}:${getClientIp(c)}`, (await getEffectiveRateLimits()).batch_per_hour, 60 * 60 * 1000);
+      await enforceMemberRateLimit("batch_start", c, session, (await getEffectiveRateLimits()).batch_per_hour, 60 * 60 * 1000);
       const publicRequestUrl = getPublicRequestUrl(c);
       const permissions = permissionsForSession(session);
       const task = await startBatchTask({
@@ -544,7 +572,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (items.length > getBatchAiLimit(session)) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${getBatchAiLimit(session)} AI scripts per batch`, 403);
       const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
       if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
-      enforceRateLimit(rateBuckets, `batch-ai:${session.code}:${getClientIp(c)}`, Math.max(1, Math.floor(aiQuota / 2)), 24 * 60 * 60 * 1000, items.length);
+      await enforceMemberRateLimit("batch_ai", c, session, Math.max(1, Math.floor(aiQuota / 2)), 24 * 60 * 60 * 1000, items.length);
 
       const results = [];
       for (const item of items) {
@@ -639,7 +667,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const session = await requireVip(c, await getStore());
       const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
       if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
-      enforceRateLimit(rateBuckets, `ai:${session.code}:${getClientIp(c)}`, aiQuota, 24 * 60 * 60 * 1000);
+      await enforceMemberRateLimit("ai", c, session, aiQuota, 24 * 60 * 60 * 1000);
       const body = await readJsonBody(c);
       const inputUrl = asString(body.url);
       if (!inputUrl) throw new DouyinServiceError("MISSING_URL");
@@ -682,7 +710,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!targetAwemeId) throw new DouyinServiceError("MISSING_URL", "aweme_id or url query parameter is required");
       const count = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 20), 100);
       const cursor = parsePositiveInt(requestUrl.searchParams.get("cursor"), 0);
-      enforceRateLimit(rateBuckets, `comments:${session.code}:${getClientIp(c)}`, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000);
+      await enforceMemberRateLimit("comments", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000);
       const data = await fetchDouyinComments(targetAwemeId, { ...parserOptions, count, cursor });
       await store.recordUsage({ kind: "comments_fetch", user_key: session.code, ip: getClientIp(c), path: "/api/v1/comments", status: 200, detail: JSON.stringify({ aweme_id: targetAwemeId, count: data.comments.length }) });
       return c.json(success({ ...data, input_url: inputUrl ?? null }));
@@ -872,7 +900,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const requestedIds = readAwemeIdSet(body.aweme_ids);
       const maxItems = Math.min(parsePositiveInt(body.video_count, task.items.length), task.items.length, getBatchParseLimit(session));
       const items = task.items.filter((item) => requestedIds.size === 0 || requestedIds.has(item.aweme_id)).slice(0, maxItems);
-      enforceRateLimit(rateBuckets, `batch-comments:${session.code}:${getClientIp(c)}`, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000, Math.max(1, items.length));
+      await enforceMemberRateLimit("batch_comments", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000, Math.max(1, items.length));
       let collectedCount = 0;
       const results = [];
       for (const item of items) {
