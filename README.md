@@ -153,6 +153,8 @@ POST /api/admin/settings/llm/test
 GET  /api/admin/metrics
 GET  /api/admin/usage
 GET  /api/admin/audit-logs
+GET  /api/admin/rate-limits
+POST /api/admin/rate-limits
 GET  /api/admin/plans
 POST /api/admin/plans
 GET  /api/admin/codes
@@ -180,6 +182,8 @@ Admin login supports username/password plus optional Google Authenticator/TOTP. 
 | `PARSE_RATE_LIMIT_PER_MINUTE` | `60` | Public parse limit per IP |
 | `MEDIA_RATE_LIMIT_PER_MINUTE` | `120` | Media/download proxy limit per IP |
 | `BATCH_RATE_LIMIT_PER_HOUR` | `30` | Batch task creation/inspection limit |
+| `AI_RATE_LIMIT_PER_DAY` | `1000` | Global AI call ceiling per user |
+| `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comments collection ceiling per user |
 
 ## Deployment
 

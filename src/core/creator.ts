@@ -24,6 +24,23 @@ export interface LlmSettingsInput {
   enabled?: boolean;
 }
 
+export interface RateLimitSettings {
+  parse_per_minute: number;
+  media_per_minute: number;
+  batch_per_hour: number;
+  ai_per_day: number;
+  comments_per_day: number;
+  updated_at: string | null;
+}
+
+export interface RateLimitSettingsInput {
+  parse_per_minute?: number;
+  media_per_minute?: number;
+  batch_per_hour?: number;
+  ai_per_day?: number;
+  comments_per_day?: number;
+}
+
 export interface AiCopyResult {
   provider: "xiaomi" | "local_template";
   mode: string;
@@ -78,6 +95,8 @@ export interface CreatorStore {
   getLlmSettings(): Promise<LlmSettings>;
   getRawApiKey(): Promise<string | null>;
   saveLlmSettings(input: LlmSettingsInput): Promise<LlmSettings>;
+  getRateLimitSettings(): Promise<RateLimitSettings>;
+  saveRateLimitSettings(input: RateLimitSettingsInput): Promise<RateLimitSettings>;
   recordUsage(input: UsageLogInput): Promise<void>;
   recordAudit(input: AuditLogInput): Promise<void>;
   getMetrics(): Promise<Record<string, number>>;
@@ -95,11 +114,23 @@ const DEFAULT_LLM_SETTINGS: Omit<LlmSettings, "updated_at"> = {
   enabled: false,
 };
 
+export const DEFAULT_RATE_LIMIT_SETTINGS: Omit<RateLimitSettings, "updated_at"> = {
+  parse_per_minute: 60,
+  media_per_minute: 120,
+  batch_per_hour: 30,
+  ai_per_day: 1000,
+  comments_per_day: 200,
+};
+
 let creatorSingleton: Promise<CreatorStore> | null = null;
 
 export function getCreatorStore(): Promise<CreatorStore> {
   creatorSingleton ??= createCreatorStore();
   return creatorSingleton;
+}
+
+export function createMemoryCreatorStore(): CreatorStore {
+  return new MemoryCreatorStore();
 }
 
 export function createTranscriptDraft(parsed: ParsedDouyinInfo): string {
@@ -225,6 +256,7 @@ export async function testLlmSettings(input: LlmSettingsInput, store?: CreatorSt
 
 class MemoryCreatorStore implements CreatorStore {
   private settings = { ...DEFAULT_LLM_SETTINGS, updated_at: null } as LlmSettings;
+  private rateLimits = { ...DEFAULT_RATE_LIMIT_SETTINGS, updated_at: null } as RateLimitSettings;
   private apiKey: string | null = null;
   private usage: UsageLogEntry[] = [];
   private audits: AuditLogEntry[] = [];
@@ -241,6 +273,13 @@ class MemoryCreatorStore implements CreatorStore {
     this.settings = normalizeSettings(input, this.settings);
     if (input.api_key !== undefined) this.apiKey = input.api_key.trim() || null;
     return this.getLlmSettings();
+  }
+  async getRateLimitSettings(): Promise<RateLimitSettings> {
+    return { ...this.rateLimits };
+  }
+  async saveRateLimitSettings(input: RateLimitSettingsInput): Promise<RateLimitSettings> {
+    this.rateLimits = normalizeRateLimitSettings(input, this.rateLimits);
+    return this.getRateLimitSettings();
   }
   async recordUsage(input: UsageLogInput): Promise<void> {
     const created_at = Date.now();
@@ -302,6 +341,18 @@ class SqliteCreatorStore implements CreatorStore {
         .run(input.api_key.trim(), Date.now());
     }
     return this.getLlmSettings();
+  }
+
+  async getRateLimitSettings(): Promise<RateLimitSettings> {
+    const raw = this.readJson("rate_limit_settings");
+    return normalizeRateLimitSettings(raw, { ...DEFAULT_RATE_LIMIT_SETTINGS, updated_at: null }, false);
+  }
+
+  async saveRateLimitSettings(input: RateLimitSettingsInput): Promise<RateLimitSettings> {
+    const current = await this.getRateLimitSettings();
+    const settings = normalizeRateLimitSettings(input, current);
+    this.writeJson("rate_limit_settings", settings);
+    return settings;
   }
 
   async recordUsage(input: UsageLogInput): Promise<void> {
@@ -406,6 +457,17 @@ function normalizeSettings(input: LlmSettingsInput, current: LlmSettings): LlmSe
   };
 }
 
+function normalizeRateLimitSettings(input: RateLimitSettingsInput | Record<string, unknown>, current: RateLimitSettings, touch = true): RateLimitSettings {
+  return {
+    parse_per_minute: clampRate(input.parse_per_minute, current.parse_per_minute ?? DEFAULT_RATE_LIMIT_SETTINGS.parse_per_minute, 1, 10_000),
+    media_per_minute: clampRate(input.media_per_minute, current.media_per_minute ?? DEFAULT_RATE_LIMIT_SETTINGS.media_per_minute, 1, 50_000),
+    batch_per_hour: clampRate(input.batch_per_hour, current.batch_per_hour ?? DEFAULT_RATE_LIMIT_SETTINGS.batch_per_hour, 1, 10_000),
+    ai_per_day: clampRate(input.ai_per_day, current.ai_per_day ?? DEFAULT_RATE_LIMIT_SETTINGS.ai_per_day, 1, 1_000_000),
+    comments_per_day: clampRate(input.comments_per_day, current.comments_per_day ?? DEFAULT_RATE_LIMIT_SETTINGS.comments_per_day, 1, 1_000_000),
+    updated_at: touch ? new Date().toISOString() : (asString((input as Record<string, unknown>).updated_at) ?? current.updated_at ?? null),
+  };
+}
+
 async function callOpenAiCompatible(options: {
   settings: LlmSettings;
   apiKey: string;
@@ -476,6 +538,12 @@ function asPositiveNumber(value: unknown, fallback: number): number {
 function asFiniteNumber(value: unknown, fallback: number): number {
   const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   return Number.isFinite(number) ? number : fallback;
+}
+
+function clampRate(value: unknown, fallback: number, min: number, max: number): number {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
+  if (!Number.isFinite(number)) return Math.max(min, Math.min(max, Math.floor(fallback)));
+  return Math.max(min, Math.min(max, Math.floor(number)));
 }
 
 function normalizeListLimit(value: unknown): number {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.ts";
-import { createMemoryVipStore } from "../src/core/index.ts";
+import { createMemoryCreatorStore, createMemoryVipStore } from "../src/core/index.ts";
 import { IMAGE_HTML, makeFixtureFetcher, VIDEO_HTML } from "./fixtures.ts";
 
 const encodedUrl = encodeURIComponent("https://v.douyin.com/abc123/");
@@ -48,6 +48,18 @@ describe("api routes", () => {
     expect(html).toContain("scheme recommended");
     expect(html).toContain("mock c");
     expect(html).toContain("choice");
+  });
+
+  it("renders clean admin console with rate limit controls", async () => {
+    const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore: createMemoryCreatorStore() });
+    const response = await app.request("/admin");
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("抖映灵感台后台");
+    expect(html).toContain("接口限流");
+    expect(html).toContain("/api/admin/rate-limits");
+    expect(html).not.toContain("瑙ｆ瀽");
   });
 
   it("returns plain text no-watermark url on compatibility endpoint", async () => {
@@ -278,6 +290,37 @@ describe("api routes", () => {
       const usage = await app.request("/api/admin/usage?limit=5", { headers: { authorization: "Bearer test-admin-token" } });
       expect(usage.status).toBe(200);
       expect(Array.isArray((await usage.json()).data)).toBe(true);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+    }
+  });
+
+  it("lets admin configure rate limits and applies them to public parsing", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = "rate-admin-token";
+    try {
+      const creatorStore = createMemoryCreatorStore();
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), cacheTtlMs: 0, creatorStore });
+      const adminHeaders = { authorization: "Bearer rate-admin-token", "content-type": "application/json" };
+
+      const saved = await app.request("/api/admin/rate-limits", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({ parse_per_minute: 1, media_per_minute: 9, batch_per_hour: 8, ai_per_day: 7, comments_per_day: 6 }),
+      });
+      const savedBody = await saved.json();
+      expect(saved.status).toBe(200);
+      expect(savedBody.data).toMatchObject({ parse_per_minute: 1, media_per_minute: 9, batch_per_hour: 8, ai_per_day: 7, comments_per_day: 6 });
+
+      const first = await app.request(`/api/v1/parse?url=${encodedUrl}`, { headers: { "x-forwarded-for": "192.0.2.44" } });
+      const second = await app.request(`/api/v1/parse?url=${encodedUrl}`, { headers: { "x-forwarded-for": "192.0.2.44" } });
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(429);
+
+      const audit = await app.request("/api/admin/audit-logs?limit=5", { headers: { authorization: "Bearer rate-admin-token" } });
+      const auditBody = await audit.json();
+      expect(auditBody.data.some((entry: any) => entry.action === "rate_limits_save")).toBe(true);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;
