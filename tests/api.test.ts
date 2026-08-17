@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.ts";
+import { createMemoryVipStore } from "../src/core/index.ts";
 import { IMAGE_HTML, makeFixtureFetcher, VIDEO_HTML } from "./fixtures.ts";
 
 const encodedUrl = encodeURIComponent("https://v.douyin.com/abc123/");
@@ -170,5 +171,54 @@ describe("api routes", () => {
 
     expect(response.status).toBe(200);
     expect(body.data).toMatchObject({ client_id: "client-a", active_connections: 1, online_count: 3, base_count: 2 });
+  });
+
+  it("registers activation code into a member account and exposes plan permissions", async () => {
+    const store = await createMemoryVipStore(["REG-TEST-1"]);
+    const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), vipStore: store });
+
+    const register = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ code: "REG-TEST-1", username: "creator_demo", password: "password123" }),
+    });
+    const body = await register.json();
+
+    expect(register.status).toBe(200);
+    expect(body.data.member.username).toBe("creator_demo");
+    expect(body.data.member.plan.id).toBe("standard");
+    expect(body.data.permissions.batch_parse_limit).toBe(50);
+
+    const me = await app.request("/api/v1/me", { headers: { authorization: `Bearer ${body.data.token}` } });
+    const meBody = await me.json();
+    expect(meBody.data.session_type).toBe("member");
+    expect(meBody.data.permissions.ai_daily_quota).toBe(200);
+  });
+
+  it("lets admin manage member plans and activation codes with admin token", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = "test-admin-token";
+    try {
+      const store = await createMemoryVipStore([]);
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), vipStore: store });
+
+      const plan = await app.request("/api/admin/plans", {
+        method: "POST",
+        headers: { authorization: "Bearer test-admin-token" },
+        body: JSON.stringify({ id: "team", name: "Team", batch_parse_limit: 300, ai_daily_quota: 1200, concurrency: 6, queue_priority: 90 }),
+      });
+      expect(plan.status).toBe(200);
+      expect((await plan.json()).data.batch_parse_limit).toBe(300);
+
+      const code = await app.request("/api/admin/codes", {
+        method: "POST",
+        headers: { authorization: "Bearer test-admin-token" },
+        body: JSON.stringify({ code: "TEAM-001", plan_id: "team", max_uses: 2 }),
+      });
+      expect(code.status).toBe(200);
+      expect((await code.json()).data.plan_id).toBe("team");
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+    }
   });
 });

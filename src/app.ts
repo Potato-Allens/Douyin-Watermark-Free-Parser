@@ -15,7 +15,8 @@ import {
   testLlmSettings,
   toServiceError,
 } from "./core/index.ts";
-import type { ApiSuccessResponse, FetchLike, ParseOptions, ParsedDouyinInfo, VipSession, VipStore } from "./core/index.ts";
+import type { ApiSuccessResponse, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, VipSession, VipStore } from "./core/index.ts";
+import { renderAdminPage } from "./admin-ui.ts";
 import { renderHomePage } from "./ui.ts";
 
 export interface CreateAppOptions {
@@ -86,6 +87,8 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!requestUrl.searchParams.has("url")) return c.html(renderHomePage());
     return handleCompat(c.req.url, parseForRequest);
   });
+
+  app.get("/admin", (c) => c.html(renderAdminPage()));
 
   app.get("/api/hello", async (c) => {
     return handleCompat(c.req.url, parseForRequest);
@@ -168,6 +171,80 @@ export function createApp(options: CreateAppOptions = {}) {
           activated: Boolean(session),
           code: session?.code ?? null,
           expires_at: session ? new Date(session.expires_at).toISOString() : null,
+          member: isMemberSession(session)
+            ? {
+                user_id: session.user_id,
+                username: session.username,
+                plan: session.plan,
+              }
+            : null,
+        }),
+      );
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/v1/plans", async (c) => {
+    try {
+      return c.json(success(await (await getStore()).listPlans()));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/auth/register", async (c) => {
+    try {
+      const body = await readJsonBody(c);
+      const code = asString(body.code);
+      const username = asString(body.username);
+      const password = asString(body.password);
+      if (!code) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "activation code is required", 400);
+      if (!username) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "username is required", 400);
+      if (!password) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "password is required", 400);
+      const session = await (await getStore()).registerWithCode({ code, username, password });
+      if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "activation code is invalid or already used", 403);
+      const maxAge = Math.max(1, Math.floor((session.expires_at - Date.now()) / 1000));
+      c.header("set-cookie", buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)));
+      return c.json(success(memberSessionPayload(session)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/auth/login", async (c) => {
+    try {
+      const body = await readJsonBody(c);
+      const username = asString(body.username);
+      const password = asString(body.password);
+      if (!username) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "username is required", 400);
+      if (!password) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "password is required", 400);
+      const session = await (await getStore()).login({ username, password });
+      if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "username or password is invalid", 403);
+      const maxAge = Math.max(1, Math.floor((session.expires_at - Date.now()) / 1000));
+      c.header("set-cookie", buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)));
+      return c.json(success(memberSessionPayload(session)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/auth/logout", (c) => {
+    c.header("set-cookie", clearVipCookie(getPublicRequestUrl(c)));
+    return c.json(success({ logged_out: true }));
+  });
+
+  app.get("/api/v1/me", async (c) => {
+    try {
+      const session = await (await getStore()).verify(readVipToken(c.req.raw));
+      return c.json(
+        success({
+          activated: Boolean(session),
+          session_type: isMemberSession(session) ? "member" : session ? "legacy_vip" : "guest",
+          code: session?.code ?? null,
+          expires_at: session ? new Date(session.expires_at).toISOString() : null,
+          member: isMemberSession(session) ? memberSessionPayload(session).member : null,
+          permissions: permissionsForSession(session),
         }),
       );
     } catch (error) {
@@ -190,12 +267,14 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/api/v1/batch/start", async (c) => {
     try {
-      await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore());
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
       const count = parsePositiveInt(body.count, 1);
-      const concurrency = parsePositiveInt(body.concurrency, 3);
+      const maxCount = getBatchParseLimit(session);
+      if (count > maxCount) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${maxCount} works per batch`, 403);
+      const concurrency = Math.min(parsePositiveInt(body.concurrency, 3), getConcurrencyLimit(session));
       const publicRequestUrl = getPublicRequestUrl(c);
       const task = await startBatchTask({
         homepageUrl,
@@ -226,7 +305,9 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = await creatorStorePromise;
     try {
       const session = await requireVip(c, await getStore());
-      enforceRateLimit(rateBuckets, `ai:${session.code}:${getClientIp(c)}`, 30, 60 * 60 * 1000);
+      const aiQuota = getAiDailyQuota(session);
+      if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
+      enforceRateLimit(rateBuckets, `ai:${session.code}:${getClientIp(c)}`, aiQuota, 24 * 60 * 60 * 1000);
       const body = await readJsonBody(c);
       const inputUrl = asString(body.url);
       if (!inputUrl) throw new DouyinServiceError("MISSING_URL");
@@ -244,7 +325,10 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/comments", async (c) => {
     try {
-      await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore());
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
+      }
       const requestUrl = new URL(c.req.url);
       const awemeId = requestUrl.searchParams.get("aweme_id");
       const inputUrl = requestUrl.searchParams.get("url");
@@ -330,6 +414,69 @@ export function createApp(options: CreateAppOptions = {}) {
     try {
       requireAdmin(c, adminSessions);
       return c.json(success({ ...(await (await creatorStorePromise).getMetrics()), online: onlineStats() }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/admin/plans", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      return c.json(success(await (await getStore()).listPlans()));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/plans", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions);
+      const body = await readJsonBody(c);
+      const plan = await (await getStore()).savePlan({
+        id: asString(body.id) ?? "standard",
+        name: asString(body.name) ?? undefined,
+        queue_priority: body.queue_priority as number | undefined,
+        batch_parse_limit: body.batch_parse_limit as number | undefined,
+        batch_ai_limit: body.batch_ai_limit as number | undefined,
+        comment_export: typeof body.comment_export === "boolean" ? body.comment_export : undefined,
+        cover_batch_download: typeof body.cover_batch_download === "boolean" ? body.cover_batch_download : undefined,
+        ai_daily_quota: body.ai_daily_quota as number | undefined,
+        concurrency: body.concurrency as number | undefined,
+      });
+      await store.recordAudit({ actor: "admin", action: "member_plan_save", ip: getClientIp(c), detail: JSON.stringify({ id: plan.id, name: plan.name }) });
+      return c.json(success(plan));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/admin/codes", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      const requestUrl = new URL(c.req.url);
+      const limit = parsePositiveInt(requestUrl.searchParams.get("limit"), 100);
+      return c.json(success(await (await getStore()).listActivationCodes(limit)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/codes", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions);
+      const body = await readJsonBody(c);
+      const code = asString(body.code);
+      if (!code) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "activation code is required", 400);
+      const info = await (await getStore()).createActivationCode({
+        code,
+        plan_id: asString(body.plan_id) ?? "standard",
+        max_uses: body.max_uses as number | undefined,
+        expires_at: (body.expires_at as string | number | null | undefined) ?? null,
+      });
+      await store.recordAudit({ actor: "admin", action: "activation_code_create", ip: getClientIp(c), detail: JSON.stringify({ code: info.code, plan_id: info.plan_id }) });
+      return c.json(success(info));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -443,10 +590,75 @@ async function readJsonBody(c: Context): Promise<Record<string, unknown>> {
   }
 }
 
-async function requireVip(c: Context, store: VipStore): Promise<VipSession> {
+async function requireVip(c: Context, store: VipStore): Promise<VipSession | MemberSession> {
   const session = await store.verify(readVipToken(c.req.raw));
   if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "membership activation is required for batch parsing", 403);
   return session;
+}
+
+function isMemberSession(session: VipSession | MemberSession | null | undefined): session is MemberSession {
+  return Boolean(session && "user_id" in session && "plan" in session);
+}
+
+function memberSessionPayload(session: MemberSession) {
+  return {
+    activated: true,
+    token: session.token,
+    code: session.code,
+    expires_at: new Date(session.expires_at).toISOString(),
+    member: {
+      user_id: session.user_id,
+      username: session.username,
+      plan: session.plan,
+    },
+    permissions: permissionsForSession(session),
+  };
+}
+
+function permissionsForSession(session: VipSession | MemberSession | null | undefined) {
+  if (isMemberSession(session)) {
+    return {
+      batch_parse_limit: session.plan.batch_parse_limit,
+      batch_ai_limit: session.plan.batch_ai_limit,
+      ai_daily_quota: session.plan.ai_daily_quota,
+      comment_export: session.plan.comment_export,
+      cover_batch_download: session.plan.cover_batch_download,
+      concurrency: session.plan.concurrency,
+      queue_priority: session.plan.queue_priority,
+    };
+  }
+  if (session) {
+    return {
+      batch_parse_limit: 50,
+      batch_ai_limit: 30,
+      ai_daily_quota: 30,
+      comment_export: true,
+      cover_batch_download: true,
+      concurrency: 3,
+      queue_priority: 40,
+    };
+  }
+  return {
+    batch_parse_limit: 1,
+    batch_ai_limit: 0,
+    ai_daily_quota: 0,
+    comment_export: false,
+    cover_batch_download: false,
+    concurrency: 1,
+    queue_priority: 0,
+  };
+}
+
+function getBatchParseLimit(session: VipSession | MemberSession): number {
+  return permissionsForSession(session).batch_parse_limit;
+}
+
+function getConcurrencyLimit(session: VipSession | MemberSession): number {
+  return permissionsForSession(session).concurrency;
+}
+
+function getAiDailyQuota(session: VipSession | MemberSession): number {
+  return permissionsForSession(session).ai_daily_quota;
 }
 
 function readVipToken(request: Request): string | null {
@@ -488,6 +700,11 @@ function readAdminToken(request: Request): string | null {
 function buildVipCookie(token: string, maxAge: number, requestUrl: string): string {
   const secure = new URL(requestUrl).protocol === "https:" ? "; Secure" : "";
   return `vip_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function clearVipCookie(requestUrl: string): string {
+  const secure = new URL(requestUrl).protocol === "https:" ? "; Secure" : "";
+  return `vip_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
 }
 
 function buildAdminCookie(token: string, maxAge: number, requestUrl: string): string {

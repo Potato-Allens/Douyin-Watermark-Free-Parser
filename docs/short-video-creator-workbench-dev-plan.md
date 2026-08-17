@@ -18,6 +18,28 @@
 - 支持接口调用统计、安全审计、限流、防盗刷大模型额度。
 - 支持 HTTPS、网站图标、移动端自适应。
 
+## 1.1 当前技术栈选择
+
+- **后端**：TypeScript + Hono，继续保持 Node/Docker/Vercel/Workers/Deno 多入口。
+- **存储**：Node 环境优先使用 `node:sqlite` 的轻量 SQLite；非 Node 环境自动回退内存存储。
+- **前端**：原生 HTML/CSS/JS，不引入大型 UI 框架，保证首屏快、部署轻、维护简单。
+- **AI**：小米大模型走 OpenAI-compatible `/chat/completions`，Key 只保存在后台，前台不暴露。
+- **后台**：同一 Hono 服务内置 `/admin`，管理员密码 + Google Authenticator 六位动态码 + 审计日志。
+- **工作台命名**：前台命名为“抖映灵感台”，宣传定位为“粘贴分享链接，视频居中预览；解析、下载、主页采集、评论与口播文案都围绕当前视频展开”。
+
+## 1.2 已落地模块
+
+- 前台 UI 已改成以视频预览为中心的三栏布局，移动端自动把视频舞台前置。
+- 真实在线人数只显示 `在线 N`，默认基础人数为 0。
+- 会员支持激活码创建账号密码：`POST /api/v1/auth/register`。
+- 会员支持账号登录：`POST /api/v1/auth/login`。
+- 前台可读取当前会员权益：`GET /api/v1/me`。
+- 后台支持套餐配置：`GET/POST /api/admin/plans`。
+- 后台支持激活码生成/更新：`GET/POST /api/admin/codes`。
+- 后台支持小米大模型配置和测试连接：`GET/POST /api/admin/settings/llm`、`POST /api/admin/settings/llm/test`。
+- AI 文案接口已按会员套餐日额度限流：`POST /api/v1/ai/script`。
+- 批量解析按会员套餐限制单次数量和并发。
+
 ## 2. 本次确认后的新增需求
 
 ### 2.1 前台 UI 调整

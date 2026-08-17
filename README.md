@@ -11,6 +11,10 @@
 - 图文解析：返回去重后的图片列表。
 - 会员批量：激活码激活后，可输入主页链接，先获取作品数量，再按数量和并发数创建批量解析任务。
 - 真实在线：默认基础人数为 `0`，页面只展示活跃浏览器心跳统计。
+- 抖映灵感台：前台以视频预览为中心，链接识别、作品信息、AI 文案、批量任务都围绕当前视频展开。
+- 会员账号：激活码创建账号密码，后续登录自动同步套餐权益。
+- AI 文案：支持小米大模型 OpenAI-compatible 配置；未配置时回退本地模板。
+- 轻量后台：`/admin` 提供管理员登录、Google Authenticator 六位码、模型配置、套餐配置、激活码与调用指标。
 - 多运行时：Node/Docker、Vercel、Cloudflare Workers、Deno Deploy。
 
 ## 快速启动
@@ -161,6 +165,34 @@ Content-Type: application/json
 ```http
 GET /api/v1/vip/status
 Authorization: Bearer <vip-token>
+```
+
+账号激活注册：
+
+```http
+POST /api/v1/auth/register
+Content-Type: application/json
+
+{ "code": "CODE-A", "username": "creator", "password": "password123" }
+```
+
+账号登录 / 当前用户 / 套餐列表：
+
+```http
+POST /api/v1/auth/login
+GET /api/v1/me
+GET /api/v1/plans
+```
+
+后台管理：
+
+```http
+GET /admin
+POST /api/admin/login
+GET/POST /api/admin/settings/llm
+GET/POST /api/admin/plans
+GET/POST /api/admin/codes
+GET /api/admin/metrics
 ```
 
 ### 会员批量解析

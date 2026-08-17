@@ -307,3 +307,62 @@ Invoke-WebRequest -UseBasicParsing -Uri "https://dy.devforai.cn/api/v1/parse?url
   "proxy_scheme": "https"
 }
 ```
+## Creator Workbench Member/Admin Update - 2026-08-17 21:46 Asia/Shanghai
+
+Scope:
+- Frontend renamed to 抖映灵感台 and kept video preview as the center stage.
+- Added member account registration/login after activation code validation.
+- Added `/admin` lightweight console with admin login, TOTP support, Xiaomi LLM settings, member plans, activation codes, metrics.
+- Added plan-aware AI rate limit, batch count limit and concurrency limit.
+- Added local browser persistence for the latest batch task id.
+
+Changed paths:
+- `src/app.ts`
+- `src/admin-ui.ts`
+- `src/core/vip.ts`
+- `src/ui.ts`
+- `tests/api.test.ts`
+- `README.md`
+- `docs/short-video-creator-workbench-dev-plan.md`
+
+Verification commands:
+
+```powershell
+pnpm test
+```
+Result: 2 test files passed, 23 tests passed, exit status 0.
+
+```powershell
+pnpm build
+```
+Result: `tsx scripts/build-vercel.ts && pnpm typecheck`, `tsc --noEmit`, exit status 0.
+
+```powershell
+@'
+import { createApp } from './src/app.ts';
+import { createMemoryVipStore } from './src/core/index.ts';
+const u=(s)=>JSON.parse('"'+s+'"');
+const app = createApp({ vipStore: await createMemoryVipStore(['DEMO-003']) });
+const html = await (await app.request('/')).text();
+const adminHtml = await (await app.request('/admin')).text();
+const reg = await app.request('/api/v1/auth/register', { method:'POST', body: JSON.stringify({code:'DEMO-003', username:'allen_demo', password:'password123'}) });
+const regBody = await reg.json();
+const me = await app.request('/api/v1/me', { headers:{authorization:'Bearer '+regBody.data.token} });
+console.log(JSON.stringify({homeStatus:200, product:html.includes(u('\\u6296\\u6620\\u7075\\u611f\\u53f0')), centered:html.includes(u('\\u89c6\\u9891\\u5728\\u4e2d\\u5fc3')), memberRegister:html.includes(u('\\u6fc0\\u6d3b\\u5e76\\u521b\\u5efa\\u8d26\\u53f7')), admin:adminHtml.includes(u('\\u89e3\\u6790\\u4e2d\\u63a7\\u53f0')), adminGarbled:adminHtml.includes('????'), regStatus:reg.status, meStatus:me.status, meType:(await me.json()).data.session_type},null,2));
+'@ | pnpm exec tsx -
+```
+Result:
+```json
+{
+  "homeStatus": 200,
+  "product": true,
+  "centered": true,
+  "memberRegister": true,
+  "admin": true,
+  "adminGarbled": false,
+  "regStatus": 200,
+  "meStatus": 200,
+  "meType": "member"
+}
+```
+Exit status 0.
