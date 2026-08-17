@@ -66,6 +66,9 @@ describe("api routes", () => {
     expect(html).toContain("/api/admin/security");
     expect(html).toContain("/api/admin/jobs");
     expect(html).toContain("/api/admin/users");
+    expect(html).toContain('id="planBatchAi"');
+    expect(html).toContain('id="planCommentExport"');
+    expect(html).toContain('id="planCoverDownload"');
     expect(html).not.toContain("???");
   });
 
@@ -276,10 +279,24 @@ describe("api routes", () => {
       const plan = await app.request("/api/admin/plans", {
         method: "POST",
         headers: { authorization: "Bearer test-admin-token" },
-        body: JSON.stringify({ id: "team", name: "Team", batch_parse_limit: 300, ai_daily_quota: 1200, concurrency: 6, queue_priority: 90 }),
+        body: JSON.stringify({
+          id: "team",
+          name: "Team",
+          batch_parse_limit: 300,
+          batch_ai_limit: 25,
+          ai_daily_quota: 1200,
+          concurrency: 6,
+          queue_priority: 90,
+          comment_export: false,
+          cover_batch_download: false,
+        }),
       });
+      const planBody = await plan.json();
       expect(plan.status).toBe(200);
-      expect((await plan.json()).data.batch_parse_limit).toBe(300);
+      expect(planBody.data.batch_parse_limit).toBe(300);
+      expect(planBody.data.batch_ai_limit).toBe(25);
+      expect(planBody.data.comment_export).toBe(false);
+      expect(planBody.data.cover_batch_download).toBe(false);
 
       const code = await app.request("/api/admin/codes", {
         method: "POST",
