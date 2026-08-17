@@ -219,6 +219,12 @@ pnpm smoke:image-real
 
 ## 部署
 
+新手部署请看：
+
+```text
+DEPLOYMENT.md
+```
+
 ### Node
 
 ```bash
