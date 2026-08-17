@@ -271,7 +271,8 @@ export function createApp(options: CreateAppOptions = {}) {
       const totp = asString(body.totp);
       const env = getRuntimeEnv();
       const expectedUser = env.ADMIN_USERNAME ?? "admin";
-      const expectedPassword = env.ADMIN_PASSWORD ?? "admin-change-me";
+      const expectedPassword = env.ADMIN_PASSWORD;
+      if (!expectedPassword) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin password is not configured", 503);
       if (username !== expectedUser || password !== expectedPassword) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin credentials are invalid", 403);
       }
