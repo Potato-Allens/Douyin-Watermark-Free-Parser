@@ -132,6 +132,21 @@ describe("api routes", () => {
     expect(body.data.download.download_url).toContain("/api/v1/download?url=");
   });
 
+  it("uses forwarded https origin for generated proxy urls", async () => {
+    const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML) });
+    const response = await app.request(`/api/v1/parse?url=${encodedUrl}`, {
+      headers: {
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "dy.devforai.cn",
+      },
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data.download.video_proxy_url).toMatch(/^https:\/\/dy\.devforai\.cn\/api\/v1\/media\?/);
+    expect(body.data.download.download_url).toMatch(/^https:\/\/dy\.devforai\.cn\/api\/v1\/download\?/);
+  });
+
   it("rejects unsupported media proxy hosts and watermark markers", async () => {
     const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML) });
     const unsupported = await app.request("/api/v1/media?url=https%3A%2F%2Fexample.com%2Fx.mp4");

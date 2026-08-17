@@ -91,7 +91,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!inputUrl) return c.json(makeErrorResponse(new DouyinServiceError("MISSING_URL")), 400);
 
     try {
-      const parsed = decorateParsedInfo(await parseForRequest(inputUrl), c.req.url);
+      const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
       return c.json(success(parsed));
     } catch (error) {
       return jsonError(c, error);
@@ -140,7 +140,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const session = await (await getStore()).activate(code);
       if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "activation code is invalid or already used", 403);
       const maxAge = Math.max(1, Math.floor((session.expires_at - Date.now()) / 1000));
-      c.header("set-cookie", buildVipCookie(session.token, maxAge, c.req.url));
+      c.header("set-cookie", buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)));
       return c.json(
         success({
           activated: true,
@@ -190,13 +190,14 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
       const count = parsePositiveInt(body.count, 1);
       const concurrency = parsePositiveInt(body.concurrency, 3);
+      const publicRequestUrl = getPublicRequestUrl(c);
       const task = await startBatchTask({
         homepageUrl,
         count,
         concurrency,
         parseOptions: parserOptions,
         parseByAwemeId: async (awemeId) => parseForRequest(`https://www.douyin.com/video/${awemeId}`),
-        makeDownloadUrl: (parsed) => decorateParsedInfo(parsed, c.req.url).download.download_url,
+        makeDownloadUrl: (parsed) => decorateParsedInfo(parsed, publicRequestUrl).download.download_url,
       });
       return c.json(success(task));
     } catch (error) {
@@ -278,6 +279,21 @@ function makeRouteUrl(requestUrl: string, pathname: string, params: Record<strin
     if (value) url.searchParams.set(key, value);
   }
   return url.toString();
+}
+
+function getPublicRequestUrl(c: Context): string {
+  const url = new URL(c.req.url);
+  const forwardedProto = firstForwardedHeader(c.req.header("x-forwarded-proto"));
+  const forwardedHost = firstForwardedHeader(c.req.header("x-forwarded-host"));
+  const host = forwardedHost ?? c.req.header("host");
+  if (forwardedProto && /^[a-z][a-z0-9+.-]*$/i.test(forwardedProto)) url.protocol = `${forwardedProto}:`;
+  if (host) url.host = host;
+  return url.toString();
+}
+
+function firstForwardedHeader(value: string | undefined): string | null {
+  const first = value?.split(",")[0]?.trim();
+  return first || null;
 }
 
 function success<T>(data: T): ApiSuccessResponse<T> {
