@@ -80,6 +80,8 @@ describe("api routes", () => {
     expect(html).toContain("/api/admin/usage/summary");
     expect(html).toContain("/api/admin/security");
     expect(html).toContain("/api/admin/jobs");
+    expect(html).toContain("/post-jobs/");
+    expect(html).toContain("data-post-cancel");
     expect(html).toContain("/api/admin/users");
     expect(html).toContain('id="usageSummaryList"');
     expect(html).toContain('rel="manifest" href="/site.webmanifest"');
@@ -499,7 +501,9 @@ describe("api routes", () => {
 
   it("lets admin list jobs and manage member users", async () => {
     const oldToken = process.env.ADMIN_TOKEN;
+    const oldPostJobMax = process.env.POST_JOB_MAX_ACTIVE;
     process.env.ADMIN_TOKEN = "ops-admin-token";
+    process.env.POST_JOB_MAX_ACTIVE = "1";
     try {
       const store = await createMemoryVipStore(["OPS-1"]);
       const fetcher = async (input: RequestInfo | URL) => {
@@ -508,6 +512,17 @@ describe("api routes", () => {
           return new Response(JSON.stringify({ total: 1, aweme_list: [{ aweme_id: "7673000000000000001" }] }), {
             headers: { "content-type": "application/json" },
           });
+        }
+        if (url.includes("/aweme/v1/web/comment/list/")) {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          return new Response(
+            JSON.stringify({
+              status_code: 0,
+              total: 1,
+              comments: [{ cid: "ops-comment-1", text: "queued comment", digg_count: 3, create_time: 1800000000, user: { nickname: "viewer" } }],
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
         }
         if (url.includes("/user/")) {
           return new Response('<html>{"sec_uid":"SEC_OPS","aweme_id":"7673000000000000001"}</html>', {
@@ -545,6 +560,35 @@ describe("api routes", () => {
       expect(jobs.status).toBe(200);
       expect(jobsBody.data.some((job: any) => job.id === taskId && job.progress_percent >= 0)).toBe(true);
 
+      const asyncComments = await app.request(`/api/v1/batch/${taskId}/comments/collect`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ count_per_video: 1, video_count: 1, async: true }),
+      });
+      expect(asyncComments.status).toBe(202);
+
+      const asyncAi = await app.request(`/api/v1/batch/${taskId}/ai`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ prompt: "admin queue", count: 1, async: true }),
+      });
+      const asyncAiBody = await asyncAi.json();
+      expect(asyncAi.status).toBe(202);
+      const aiJobId = asyncAiBody.data.job.id;
+
+      const jobsWithPost = await app.request("/api/admin/jobs?limit=10", { headers: adminHeaders });
+      const jobsWithPostBody = await jobsWithPost.json();
+      expect(jobsWithPostBody.data.find((job: any) => job.id === taskId).post_jobs.some((job: any) => job.id === aiJobId)).toBe(true);
+
+      const cancelledPostJob = await app.request(`/api/admin/jobs/${taskId}/post-jobs/${aiJobId}/cancel`, { method: "POST", headers: adminHeaders });
+      const cancelledPostJobBody = await cancelledPostJob.json();
+      expect(cancelledPostJob.status).toBe(200);
+      expect(cancelledPostJobBody.data.post_jobs.find((job: any) => job.id === aiJobId).status).toBe("cancelled");
+
+      const auditAfterPostCancel = await app.request("/api/admin/audit-logs?limit=10", { headers: adminHeaders });
+      const auditAfterPostCancelBody = await auditAfterPostCancel.json();
+      expect(auditAfterPostCancelBody.data.some((entry: any) => entry.action === "batch_post_job_cancel")).toBe(true);
+
       const retry = await app.request(`/api/admin/jobs/${taskId}/retry`, { method: "POST", headers: adminHeaders });
       expect(retry.status).toBe(200);
       expect((await retry.json()).data.owner_key).toBe("OPS-1");
@@ -571,6 +615,8 @@ describe("api routes", () => {
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;
+      if (oldPostJobMax === undefined) delete process.env.POST_JOB_MAX_ACTIVE;
+      else process.env.POST_JOB_MAX_ACTIVE = oldPostJobMax;
     }
   });
 

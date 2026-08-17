@@ -171,6 +171,7 @@ POST /api/admin/block-ip
 GET  /api/admin/jobs
 POST /api/admin/jobs/:id/retry
 POST /api/admin/jobs/:id/cancel
+POST /api/admin/jobs/:id/post-jobs/:jobId/cancel
 GET  /api/admin/users
 POST /api/admin/users/:id/plan
 POST /api/admin/users/:id/disable
@@ -180,7 +181,7 @@ GET  /api/admin/codes
 POST /api/admin/codes
 ```
 
-Admin login supports username/password plus optional Google Authenticator/TOTP. Failed login attempts are locked by IP + username.
+Admin login supports username/password plus optional Google Authenticator/TOTP. Failed login attempts are locked by IP + username. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
 
 ## Environment Variables
 

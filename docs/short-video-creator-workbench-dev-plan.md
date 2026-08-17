@@ -56,7 +56,7 @@
 - 后台登录失败锁定已落地：默认同 IP + 用户名 15 分钟内失败 5 次后锁定 15 分钟，并写入 `admin_login_failed` / `admin_login_locked` 审计日志；可通过 `ADMIN_LOGIN_MAX_FAILURES`、`ADMIN_LOGIN_WINDOW_MINUTES`、`ADMIN_LOGIN_LOCK_MINUTES` 调整。
 - 后台限流配置已落地：`GET/POST /api/admin/rate-limits` 支持配置单条解析、媒体代理、批量任务、AI 调用和评论采集额度，并写入 `rate_limits_save` 审计日志；后台页面已加入“接口限流”配置卡片。
 - 后台安全策略已落地：`GET/POST /api/admin/security`、`POST /api/admin/block-ip` 支持 IP 黑名单、Origin/Referer 白名单、浏览器来源头检查和空 User-Agent 拦截，命中后写入 `security_blocked_request` 审计日志。
-- 后台运营管理已落地：`GET /api/admin/jobs`、`POST /api/admin/jobs/:id/retry`、`POST /api/admin/jobs/:id/cancel` 可查看、重试、取消批量任务；`GET /api/admin/users`、`POST /api/admin/users/:id/plan`、`POST /api/admin/users/:id/disable` 可查看会员、调整套餐和禁用账号。
+- 后台运营管理已落地：`GET /api/admin/jobs`、`POST /api/admin/jobs/:id/retry`、`POST /api/admin/jobs/:id/cancel` 可查看、重试、取消批量任务；`POST /api/admin/jobs/:id/post-jobs/:jobId/cancel` 可取消批量 AI/评论后处理队列；`GET /api/admin/users`、`POST /api/admin/users/:id/plan`、`POST /api/admin/users/:id/disable` 可查看会员、调整套餐和禁用账号。
 - 会员批量任务隔离已落地：`GET /api/v1/batch/tasks` 只返回当前会员自己的批量任务；任务状态、AI、导出、评论查看/导入/采集都会校验任务归属，避免跨会员查看或操作。
 - 批量封面下载已落地：`GET /api/v1/batch/:id/export?type=covers_zip` 会打包封面文件和 `cover-manifest.json`，前台“导出封面”按钮直接下载 ZIP。
 - 批量 CSV 导出已落地：`items_csv` 导出作品表格，`scripts_csv` 导出口播文案表格，`comments_csv` 导出评论表格，便于运营二次处理。
@@ -65,7 +65,7 @@
 - 方案 A 已确认继续推进；后台小米/OpenAI-compatible 大模型配置补齐高级参数：请求超时、最大 token、temperature，便于控制速度、成本和文案发散度。
 - Cookie 会话 CSRF 防护已落地：会员登录/注册和后台登录都会下发 `csrf_token` 与同名 CSRF Cookie，使用 Cookie 鉴权的写操作必须携带 `X-CSRF-Token`，降低跨站盗用后台和会员批量能力的风险。
 - 后台接口调用汇总已落地：`GET /api/admin/usage/summary` 按接口类型、状态码、用户、IP 汇总最近调用，后台首页直接显示成功、错误、限流拦截和高频来源。
-- 批量后处理队列已落地：批量 AI 口播文案和批量评论采集支持 `async: true` 加入队列，进度写入批量任务 `post_jobs`，离开页面后回来仍能看到完成进度；并发由 `POST_JOB_MAX_ACTIVE` 控制。
+- 批量后处理队列已落地：批量 AI 口播文案和批量评论采集支持 `async: true` 加入队列，进度写入批量任务 `post_jobs`，离开页面后回来仍能看到完成进度；并发由 `POST_JOB_MAX_ACTIVE` 控制；后台任务列表会展开每个后处理任务并支持取消 queued/running 状态。
 
 ## 2. 本次确认后的新增需求
 
@@ -586,6 +586,7 @@ GET  /api/admin/audit-logs
 GET  /api/admin/jobs
 POST /api/admin/jobs/:id/retry
 POST /api/admin/jobs/:id/cancel
+POST /api/admin/jobs/:id/post-jobs/:jobId/cancel
 GET  /api/admin/users
 POST /api/admin/users/:id/plan
 POST /api/admin/users/:id/disable
@@ -767,9 +768,11 @@ GET /api/v1/batch/:id/export?type=comments_csv
 POST /api/v1/batch/:id/ai                 // body 支持 { "async": true }
 POST /api/v1/batch/:id/comments/collect   // body 支持 { "async": true }
 GET  /api/v1/batch/:id/jobs
+POST /api/admin/jobs/:id/post-jobs/:jobId/cancel
 ```
 
 - `post_jobs` 会随 `GET /api/v1/batch/:id` 返回。
 - `ai` 类型表示批量口播文案生成队列。
 - `comments` 类型表示批量评论采集队列。
 - 队列字段包含 `status`、`queue_position`、`requested_count`、`completed_count`、`success_count`、`failed_count`。
+- 后台取消后处理任务会把目标 `post_jobs[].status` 标记为 `cancelled`，并写入 `batch_post_job_cancel` 审计日志。

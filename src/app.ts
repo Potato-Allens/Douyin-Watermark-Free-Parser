@@ -215,6 +215,7 @@ export function createApp(options: CreateAppOptions = {}) {
       void next
         .run(next.job)
         .catch((error) => {
+          if (next.job.status === "cancelled") return;
           next.job.status = "failed";
           next.job.error = error instanceof Error ? error.message : String(error);
           next.job.finished_at = new Date().toISOString();
@@ -242,6 +243,26 @@ export function createApp(options: CreateAppOptions = {}) {
     for (const entry of postJobQueue.values()) {
       if (entry.job.status !== "queued") entry.job.queue_position = 0;
     }
+  };
+
+  const cancelPostJob = async (taskId: string, jobId: string): Promise<{ task: BatchTask; job: BatchPostJob } | null> => {
+    const task = await getBatchTask(taskId);
+    if (!task) return null;
+    const job = (task.post_jobs ?? []).find((entry) => entry.id === jobId);
+    if (!job) return null;
+    if (job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled") {
+      const now = new Date().toISOString();
+      job.status = "cancelled";
+      job.queue_position = 0;
+      job.error ??= "cancelled by admin";
+      job.finished_at = now;
+      job.updated_at = now;
+      postJobQueue.delete(job.id);
+      updatePostJobQueuePositions();
+      await saveBatchTask(task);
+      schedulePostJobs();
+    }
+    return { task, job };
   };
 
   const cleanupOnlineSessions = () => {
@@ -651,6 +672,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const runAiJob = async (job?: BatchPostJob) => {
         const results = [];
         for (const item of items) {
+          if (job?.status === "cancelled") break;
           try {
             const parsed = parsedFromBatchItem(task, item);
             const ai = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
@@ -669,9 +691,11 @@ export function createApp(options: CreateAppOptions = {}) {
           }
         }
         if (job) {
-          job.status = job.failed_count === job.requested_count ? "failed" : "completed";
-          job.finished_at = new Date().toISOString();
-          job.updated_at = job.finished_at;
+          if (job.status !== "cancelled") {
+            job.status = job.failed_count === job.requested_count ? "failed" : "completed";
+            job.finished_at = new Date().toISOString();
+            job.updated_at = job.finished_at;
+          }
         }
         await saveBatchTask(task);
         return results;
@@ -1039,6 +1063,7 @@ export function createApp(options: CreateAppOptions = {}) {
         let collectedCount = 0;
         const results = [];
         for (const item of items) {
+          if (job?.status === "cancelled") break;
           try {
             const fetched = await fetchDouyinComments(item.aweme_id, { ...parserOptions, count: countPerVideo });
             item.comments = mergeComments(item.comments, fetched.comments);
@@ -1057,9 +1082,11 @@ export function createApp(options: CreateAppOptions = {}) {
           }
         }
         if (job) {
-          job.status = job.failed_count === job.requested_count ? "failed" : "completed";
-          job.finished_at = new Date().toISOString();
-          job.updated_at = job.finished_at;
+          if (job.status !== "cancelled") {
+            job.status = job.failed_count === job.requested_count ? "failed" : "completed";
+            job.finished_at = new Date().toISOString();
+            job.updated_at = job.finished_at;
+          }
         }
         await saveBatchTask(task);
         return { collectedCount, results };
@@ -1139,6 +1166,24 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       await store.recordAudit({ actor: "admin", action: "batch_job_cancel", ip: getClientIp(c), detail: JSON.stringify({ task_id: task.id, owner_key: task.owner_key, status: task.status }) });
       return c.json(success(adminTaskSummary(task)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/jobs/:id/post-jobs/:jobId/cancel", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions, { mutation: true });
+      const result = await cancelPostJob(c.req.param("id"), c.req.param("jobId"));
+      if (!result) throw new DouyinServiceError("PARSE_FAILED", "post job not found", 404);
+      await store.recordAudit({
+        actor: "admin",
+        action: "batch_post_job_cancel",
+        ip: getClientIp(c),
+        detail: JSON.stringify({ task_id: result.task.id, job_id: result.job.id, type: result.job.type, status: result.job.status }),
+      });
+      return c.json(success(adminTaskSummary(result.task)));
     } catch (error) {
       return jsonError(c, error);
     }
