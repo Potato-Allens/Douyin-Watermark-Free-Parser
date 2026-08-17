@@ -313,9 +313,11 @@ export function createApp(options: CreateAppOptions = {}) {
     return parsed;
   };
 
-  const buildProfilePreview = async (homepageUrl: string, previewLimit: number, publicRequestUrl: string) => {
-    const inspect = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems: previewLimit });
-    const ids = inspect.aweme_ids.slice(0, previewLimit);
+  const buildProfilePreview = async (homepageUrl: string, previewLimit: number, publicRequestUrl: string, previewOffset = 0) => {
+    const offset = Math.max(0, Math.floor(previewOffset));
+    const limit = Math.max(1, Math.floor(previewLimit));
+    const inspect = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems: offset + limit });
+    const ids = inspect.aweme_ids.slice(offset, offset + limit);
     const items: Array<Record<string, unknown>> = [];
     for (const awemeId of ids) {
       try {
@@ -337,7 +339,19 @@ export function createApp(options: CreateAppOptions = {}) {
         });
       }
     }
-    return { ...inspect, preview_count: items.length, items };
+    const loadedCount = offset + items.length;
+    const fetchedToLimit = inspect.aweme_ids.length >= offset + limit;
+    const hasMore = inspect.aweme_ids.length > loadedCount || (typeof inspect.total_count === "number" ? loadedCount < inspect.total_count : fetchedToLimit);
+    return {
+      ...inspect,
+      offset,
+      limit,
+      preview_count: items.length,
+      loaded_count: loadedCount,
+      has_more: hasMore,
+      next_offset: hasMore ? loadedCount : null,
+      items,
+    };
   };
 
   const getStore = () => vipStorePromise ?? getVipStore();
@@ -602,9 +616,12 @@ export function createApp(options: CreateAppOptions = {}) {
       sessionKey = session.code;
       const requestUrl = new URL(c.req.url);
       const homepageUrl = requestUrl.searchParams.get("url") || `https://www.douyin.com/user/${encodeURIComponent(profileId)}`;
-      const previewLimit = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 12), getBatchParseLimit(session), 100);
+      const planLimit = getBatchParseLimit(session);
+      const previewOffset = parseNonNegativeInt(requestUrl.searchParams.get("offset"), 0);
+      if (previewOffset >= planLimit) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${planLimit} works per profile preview`, 403);
+      const previewLimit = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 12), planLimit - previewOffset, 100);
       await enforceMemberRateLimit("profile_videos", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
-      const data = await buildProfilePreview(homepageUrl, previewLimit, getPublicRequestUrl(c));
+      const data = await buildProfilePreview(homepageUrl, previewLimit, getPublicRequestUrl(c), previewOffset);
       await recordUsage({ kind: "profile_videos", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/:id/videos", status: 200, detail: JSON.stringify({ profile_id: profileId, preview_count: data.preview_count, total_count: data.total_count }) });
       return c.json(success({ profile_id: profileId, ...data }));
     } catch (error) {
@@ -622,10 +639,13 @@ export function createApp(options: CreateAppOptions = {}) {
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
-      const previewLimit = Math.min(parsePositiveInt(body.count, 8), getBatchParseLimit(session), 24);
+      const planLimit = getBatchParseLimit(session);
+      const previewOffset = parseNonNegativeInt(body.offset, 0);
+      if (previewOffset >= planLimit) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${planLimit} works per profile preview`, 403);
+      const previewLimit = Math.min(parsePositiveInt(body.count, 8), planLimit - previewOffset, 50);
       await enforceMemberRateLimit("profile_preview", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
-      const data = await buildProfilePreview(homepageUrl, previewLimit, getPublicRequestUrl(c));
-      await recordUsage({ kind: "profile_preview", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/preview", status: 200, detail: JSON.stringify({ preview_count: data.preview_count, total_count: data.total_count }) });
+      const data = await buildProfilePreview(homepageUrl, previewLimit, getPublicRequestUrl(c), previewOffset);
+      await recordUsage({ kind: "profile_preview", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/preview", status: 200, detail: JSON.stringify({ offset: data.offset, preview_count: data.preview_count, total_count: data.total_count }) });
       return c.json(success(data));
     } catch (error) {
       await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
@@ -2679,6 +2699,11 @@ function safeUsageUrlDetail(rawUrl: string): string {
 function parsePositiveInt(value: unknown, fallback: number): number {
   const number = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
+function parseNonNegativeInt(value: unknown, fallback: number): number {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
 }
 
 function randomId(): string {

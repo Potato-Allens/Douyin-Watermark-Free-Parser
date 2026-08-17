@@ -48,6 +48,7 @@ describe("api routes", () => {
     expect(html).toContain('rel="manifest" href="/site.webmanifest"');
     expect(html).toContain('rel="apple-touch-icon" href="/apple-touch-icon.svg"');
     expect(html).toContain('id="profilePreviewList"');
+    expect(html).toContain('id="loadMoreProfileBtn"');
     expect(html).toContain('id="queuePosition"');
     expect(html).toContain('id="queuePriority"');
     expect(html).toContain('id="centerDownloadBtn"');
@@ -1313,13 +1314,28 @@ describe("api routes", () => {
     });
     const previewBody = await preview.json();
     expect(preview.status).toBe(200);
+    expect(previewBody.data.offset).toBe(0);
+    expect(previewBody.data.has_more).toBe(true);
+    expect(previewBody.data.next_offset).toBe(1);
     expect(previewBody.data.preview_count).toBe(1);
     expect(previewBody.data.items[0].download_url).toContain("/api/v1/download");
 
-    const videos = await app.request("/api/v1/profile/SEC_PREVIEW/videos?count=1", { headers });
+    const morePreview = await app.request("/api/v1/profile/preview", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_PREVIEW", count: 1, offset: 1 }),
+    });
+    const morePreviewBody = await morePreview.json();
+    expect(morePreview.status).toBe(200);
+    expect(morePreviewBody.data.offset).toBe(1);
+    expect(morePreviewBody.data.has_more).toBe(false);
+    expect(morePreviewBody.data.items[0].aweme_id).toBe("7673000000000000002");
+
+    const videos = await app.request("/api/v1/profile/SEC_PREVIEW/videos?count=1&offset=1", { headers });
     const videosBody = await videos.json();
     expect(videos.status).toBe(200);
     expect(videosBody.data.profile_id).toBe("SEC_PREVIEW");
+    expect(videosBody.data.offset).toBe(1);
     expect(videosBody.data.preview_count).toBe(1);
     expect(videosBody.data.items[0].download_url).toContain("/api/v1/download");
 
