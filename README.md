@@ -1,6 +1,6 @@
 # Douyin Watermark-Free Parser
 
-抖音单条视频/图文解析服务，内置抖音风格 Web UI、规范 API、兼容接口、视频预览代理、下载代理、会员激活与主页批量解析任务。
+抖音单条视频/图文解析服务，内置抖音风格 Web UI、规范 API、兼容接口、视频预览代理、下载代理、真实在线人数、会员激活与主页批量解析任务。
 
 ## 功能
 
@@ -10,6 +10,7 @@
 - 作品信息：返回标题/介绍、作者、点赞、评论、转发、收藏、封面、背景音乐。
 - 图文解析：返回去重后的图片列表。
 - 会员批量：激活码激活后，可输入主页链接，先获取作品数量，再按数量和并发数创建批量解析任务。
+- 真实在线：默认基础人数为 `0`，页面只展示活跃浏览器心跳统计。
 - 多运行时：Node/Docker、Vercel、Cloudflare Workers、Deno Deploy。
 
 ## 快速启动
@@ -41,6 +42,7 @@ https://v.douyin.com/xxxx/
 - 标题/介绍
 - 背景音乐
 - 封面
+- 真实在线人数
 - 会员批量解析入口
 
 ## API
@@ -115,6 +117,19 @@ GET /api/v1/download?url=<video-url>&filename=douyin.mp4
 
 - `/media`：同源预览，支持 Range。
 - `/download`：附件下载，自动设置文件名。
+
+### 真实在线人数
+
+```http
+GET /api/v1/online
+POST /api/v1/online/ping
+```
+
+`POST /api/v1/online/ping` 示例：
+
+```json
+{ "client_id": "browser-session-id" }
+```
 
 ### 会员激活
 

@@ -11,7 +11,9 @@ describe("api routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
-    expect(await response.text()).toContain("抖音视频解析");
+    const html = await response.text();
+    expect(html).toContain("抖音视频解析");
+    expect(html).toContain('id="onlineCount"');
   });
 
   it("keeps /api/hello compatibility message when url is missing", async () => {
