@@ -1,6 +1,6 @@
 import { DouyinServiceError } from "./errors.ts";
-import { inspectDouyinProfile, type ProfileInspectResult } from "./profile.ts";
-import type { ParseOptions, ParsedDouyinInfo } from "./types.ts";
+import { inspectDouyinProfile, type ProfileInspectOptions, type ProfileInspectResult } from "./profile.ts";
+import type { ParsedDouyinInfo } from "./types.ts";
 import type { AiCopyResult } from "./creator.ts";
 
 export type BatchItemStatus = "pending" | "running" | "success" | "failed";
@@ -59,7 +59,7 @@ export interface BatchStartOptions {
   homepageUrl: string;
   count: number;
   concurrency: number;
-  parseOptions?: ParseOptions;
+  parseOptions?: ProfileInspectOptions;
   parseByAwemeId: (awemeId: string) => Promise<ParsedDouyinInfo>;
   makeDownloadUrl: (parsed: ParsedDouyinInfo) => string | null;
   ownerKey?: string | null;
@@ -93,13 +93,13 @@ let persistTail = Promise.resolve();
 let activeTaskCount = 0;
 let schedulerScheduled = false;
 
-export async function inspectBatchHomepage(homepageUrl: string, options: ParseOptions = {}): Promise<ProfileInspectResult> {
+export async function inspectBatchHomepage(homepageUrl: string, options: ProfileInspectOptions = {}): Promise<ProfileInspectResult> {
   return await inspectDouyinProfile(homepageUrl, options);
 }
 
 export async function startBatchTask(options: BatchStartOptions): Promise<BatchTask> {
   await loadPersistedTasks();
-  const inspect = await inspectDouyinProfile(options.homepageUrl, options.parseOptions ?? {});
+  const inspect = await inspectDouyinProfile(options.homepageUrl, { ...(options.parseOptions ?? {}), maxItems: options.count });
   if (inspect.aweme_ids.length === 0) {
     throw new DouyinServiceError("PARSE_FAILED", "profile works list did not expose video ids for batch parsing");
   }

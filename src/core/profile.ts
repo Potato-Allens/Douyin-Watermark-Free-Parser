@@ -14,7 +14,13 @@ export interface ProfileInspectResult {
   aweme_ids: string[];
 }
 
-export async function inspectDouyinProfile(input: string, options: ParseOptions = {}): Promise<ProfileInspectResult> {
+export interface ProfileInspectOptions extends ParseOptions {
+  maxItems?: number;
+  pageSize?: number;
+  maxPages?: number;
+}
+
+export async function inspectDouyinProfile(input: string, options: ProfileInspectOptions = {}): Promise<ProfileInspectResult> {
   const normalizedUrl = normalizeProfileInput(input);
   const page = await fetchProfileText(normalizedUrl, options);
   const secUserId = extractSecUserId(page.url) ?? extractSecUserId(page.text);
@@ -64,18 +70,53 @@ async function fetchProfileText(url: string, options: ParseOptions): Promise<{ t
   return { text: await response.text(), url: response.url || url };
 }
 
-async function fetchProfilePostList(secUserId: string, options: ParseOptions): Promise<{ awemeIds: string[]; totalCount: number | null }> {
+async function fetchProfilePostList(secUserId: string, options: ProfileInspectOptions): Promise<{ awemeIds: string[]; totalCount: number | null }> {
   const fetcher: FetchLike = options.fetcher ?? globalThis.fetch;
   if (!fetcher) throw new DouyinServiceError("FETCH_FAILED", "fetch is not available");
+  const maxItems = clampInt(options.maxItems ?? 20, 1, 1000);
+  const pageSize = clampInt(options.pageSize ?? Math.min(35, maxItems), 1, 50);
+  const maxPages = clampInt(options.maxPages ?? Math.ceil(maxItems / pageSize) + 2, 1, 100);
+  const awemeIds: string[] = [];
+  let totalCount: number | null = null;
+  let cursor = 0;
+  let page = 0;
+  let hasMore = true;
+
+  while (awemeIds.length < maxItems && hasMore && page < maxPages) {
+    const pageCount = Math.min(pageSize, maxItems - awemeIds.length);
+    const data = await fetchProfilePostPage(secUserId, cursor, pageCount, fetcher, options);
+    totalCount ??= data.totalCount;
+    const beforeCount = awemeIds.length;
+    for (const id of data.awemeIds) {
+      if (!awemeIds.includes(id)) awemeIds.push(id);
+      if (awemeIds.length >= maxItems) break;
+    }
+    page += 1;
+    const nextCursor = data.nextCursor ?? cursor;
+    const progressed = nextCursor !== cursor || awemeIds.length > beforeCount;
+    hasMore = Boolean(data.hasMore) && progressed && awemeIds.length < maxItems;
+    cursor = nextCursor;
+  }
+
+  return { awemeIds, totalCount };
+}
+
+async function fetchProfilePostPage(
+  secUserId: string,
+  cursor: number,
+  count: number,
+  fetcher: FetchLike,
+  options: ProfileInspectOptions,
+): Promise<{ awemeIds: string[]; totalCount: number | null; nextCursor: number | null; hasMore: boolean }> {
   const endpoint = new URL("https://www.douyin.com/aweme/v1/web/aweme/post/");
   endpoint.searchParams.set("device_platform", "webapp");
   endpoint.searchParams.set("aid", "6383");
   endpoint.searchParams.set("channel", "channel_pc_web");
   endpoint.searchParams.set("sec_user_id", secUserId);
-  endpoint.searchParams.set("max_cursor", "0");
+  endpoint.searchParams.set("max_cursor", String(cursor));
   endpoint.searchParams.set("locate_query", "false");
   endpoint.searchParams.set("show_live_replay_strategy", "1");
-  endpoint.searchParams.set("count", "20");
+  endpoint.searchParams.set("count", String(count));
   endpoint.searchParams.set("publish_video_strategy_type", "2");
   endpoint.searchParams.set("pc_client_type", "1");
   endpoint.searchParams.set("version_code", "170400");
@@ -104,9 +145,12 @@ async function fetchProfilePostList(secUserId: string, options: ParseOptions): P
   if (!response.ok) throw new DouyinServiceError("FETCH_FAILED", `profile post api status ${response.status}`);
   const text = await response.text();
   const data = JSON.parse(text) as unknown;
-  const ids = extractAwemeIds(JSON.stringify(data));
+  const awemeList = readArray(data, ["aweme_list"]);
+  const ids = extractAwemeIds(JSON.stringify(awemeList.length > 0 ? awemeList : data));
   const total = readNumber(data, ["total"]) ?? readNumber(data, ["max_count"]);
-  return { awemeIds: ids, totalCount: total };
+  const nextCursor = readNumber(data, ["max_cursor"]) ?? readNumber(data, ["cursor"]) ?? readNumber(data, ["next_cursor"]);
+  const hasMore = readBoolean(data, ["has_more"]) ?? (readNumber(data, ["has_more"]) ?? 0) > 0;
+  return { awemeIds: ids, totalCount: total, nextCursor, hasMore };
 }
 
 function normalizeProfileInput(input: string): string {
@@ -172,7 +216,29 @@ function readNumber(value: unknown, path: string[]): number | null {
     if (!cursor || typeof cursor !== "object") return null;
     cursor = (cursor as Record<string, unknown>)[key];
   }
-  return typeof cursor === "number" && Number.isFinite(cursor) ? cursor : null;
+  return typeof cursor === "number" && Number.isFinite(cursor) ? cursor : typeof cursor === "string" && Number.isFinite(Number(cursor)) ? Number(cursor) : null;
+}
+
+function readBoolean(value: unknown, path: string[]): boolean | null {
+  let cursor = value;
+  for (const key of path) {
+    if (!cursor || typeof cursor !== "object") return null;
+    cursor = (cursor as Record<string, unknown>)[key];
+  }
+  return typeof cursor === "boolean" ? cursor : null;
+}
+
+function readArray(value: unknown, path: string[]): unknown[] {
+  let cursor = value;
+  for (const key of path) {
+    if (!cursor || typeof cursor !== "object") return [];
+    cursor = (cursor as Record<string, unknown>)[key];
+  }
+  return Array.isArray(cursor) ? cursor : [];
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.floor(Number.isFinite(value) ? value : min)));
 }
 
 function unique(values: string[]): string[] {

@@ -325,6 +325,60 @@ describe("api routes", () => {
     expect(exportedBody.comments[0].comments[0].text).toBe("这个视频很有用");
   });
 
+  it("paginates profile works so batch can start beyond the first page", async () => {
+    const store = await createMemoryVipStore(["PAGE-1"]);
+    const postCursors: string[] = [];
+    const makeIds = (start: number, count: number) =>
+      Array.from({ length: count }, (_, index) => ({ aweme_id: String(7673000000000000000n + BigInt(start + index)) }));
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/aweme/v1/web/aweme/post/")) {
+        const parsed = new URL(url);
+        const cursor = parsed.searchParams.get("max_cursor") ?? "0";
+        postCursors.push(cursor);
+        const page =
+          cursor === "0"
+            ? { total: 25, max_cursor: 20, has_more: 1, aweme_list: makeIds(1, 20) }
+            : { total: 25, max_cursor: 25, has_more: 0, aweme_list: makeIds(21, 5) };
+        return new Response(JSON.stringify(page), { headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/user/")) {
+        return new Response(`<html>{"sec_uid":"SEC_PAGE","aweme_id":"7673000000000000001"}</html>`, {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response(VIDEO_HTML, { headers: { "content-type": "text/html" } });
+    };
+    const app = createApp({ fetcher, vipStore: store, cacheTtlMs: 0 });
+    const register = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ code: "PAGE-1", username: "page_user", password: "password123" }),
+    });
+    const headers = { authorization: `Bearer ${(await register.json()).data.token}` };
+
+    const inspect = await app.request("/api/v1/batch/inspect", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_PAGE", count: 25 }),
+    });
+    const inspectBody = await inspect.json();
+    expect(inspect.status).toBe(200);
+    expect(inspectBody.data.available_count).toBe(25);
+    expect(postCursors).toEqual(["0", "20"]);
+
+    postCursors.length = 0;
+    const started = await app.request("/api/v1/batch/start", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_PAGE", count: 25, concurrency: 1 }),
+    });
+    const startedBody = await started.json();
+    expect(started.status).toBe(200);
+    expect(startedBody.data.requested_count).toBe(25);
+    expect(startedBody.data.items).toHaveLength(25);
+    expect(postCursors).toEqual(["0", "20"]);
+  });
+
   it("generates batch AI scripts and exports JSON/text artifacts", async () => {
     const store = await createMemoryVipStore(["BATCH-AI-1"]);
     const fetcher = async (input: RequestInfo | URL) => {

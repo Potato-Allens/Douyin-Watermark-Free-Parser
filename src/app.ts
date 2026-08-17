@@ -260,11 +260,12 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/api/v1/batch/inspect", async (c) => {
     try {
-      await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore());
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
-      const data = await inspectBatchHomepage(homepageUrl, parserOptions);
+      const maxItems = Math.min(parsePositiveInt(body.count ?? body.max_items, getBatchParseLimit(session)), getBatchParseLimit(session));
+      const data = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems });
       return c.json(success(data));
     } catch (error) {
       return jsonError(c, error);
@@ -278,7 +279,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
       const previewLimit = Math.min(parsePositiveInt(body.count, 8), getBatchParseLimit(session), 24);
-      const inspect = await inspectBatchHomepage(homepageUrl, parserOptions);
+      const inspect = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems: previewLimit });
       const ids = inspect.aweme_ids.slice(0, previewLimit);
       const publicRequestUrl = getPublicRequestUrl(c);
       const items = [];
