@@ -56,6 +56,16 @@ export interface LoginMemberInput {
   password: string;
 }
 
+export interface MemberUserInfo {
+  id: string;
+  username: string;
+  code: string;
+  plan_id: string;
+  status: string;
+  created_at: number;
+  plan: MemberPlan;
+}
+
 export interface VipStore {
   activate(code: string): Promise<VipSession | null>;
   verify(token: string | null | undefined): Promise<VipSession | MemberSession | null>;
@@ -65,6 +75,8 @@ export interface VipStore {
   verifyMember(token: string | null | undefined): Promise<MemberSession | null>;
   listPlans(): Promise<MemberPlan[]>;
   savePlan(input: MemberPlanInput): Promise<MemberPlan>;
+  listMembers(limit?: number): Promise<MemberUserInfo[]>;
+  updateMember(userId: string, input: { plan_id?: string; status?: string }): Promise<MemberUserInfo | null>;
   createActivationCode(input: ActivationCodeInput): Promise<ActivationCodeInfo>;
   listActivationCodes(limit?: number): Promise<ActivationCodeInfo[]>;
 }
@@ -230,6 +242,37 @@ class SqliteVipStore implements VipStore {
     return plan;
   }
 
+  async listMembers(limit = 100): Promise<MemberUserInfo[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT u.id AS member_id, u.username, u.code, u.plan_id AS user_plan_id, u.status, u.created_at AS user_created_at, p.*
+         FROM member_users u
+         LEFT JOIN member_plans p ON p.id = u.plan_id
+         ORDER BY u.created_at DESC
+         LIMIT ?`,
+      )
+      .all(clampNumber(limit, 1, 500)) as any[];
+    return rows.map(rowToMemberInfo);
+  }
+
+  async updateMember(userId: string, input: { plan_id?: string; status?: string }): Promise<MemberUserInfo | null> {
+    const current = this.db.prepare("SELECT * FROM member_users WHERE id = ?").get(userId) as any;
+    if (!current) return null;
+    const planId = input.plan_id ? normalizePlanId(input.plan_id) : String(current.plan_id ?? "standard");
+    const status = normalizeMemberStatus(input.status ?? current.status ?? "active");
+    this.db.prepare("UPDATE member_users SET plan_id = ?, status = ? WHERE id = ?").run(planId, status, userId);
+    if (status !== "active") this.db.prepare("DELETE FROM member_sessions WHERE user_id = ?").run(userId);
+    const row = this.db
+      .prepare(
+        `SELECT u.id AS member_id, u.username, u.code, u.plan_id AS user_plan_id, u.status, u.created_at AS user_created_at, p.*
+         FROM member_users u
+         LEFT JOIN member_plans p ON p.id = u.plan_id
+         WHERE u.id = ?`,
+      )
+      .get(userId) as any;
+    return row ? rowToMemberInfo(row) : null;
+  }
+
   async createActivationCode(input: ActivationCodeInput): Promise<ActivationCodeInfo> {
     const info = normalizeActivationCodeInput(input);
     this.db
@@ -362,7 +405,7 @@ class MemoryVipStore implements VipStore {
   private readonly plans = new Map<string, MemberPlan>(DEFAULT_PLANS.map((plan) => [plan.id, { ...plan }]));
   private readonly codes = new Map<string, { max_uses: number; used_count: number; expires_at: number | null; plan_id: string; status: string; created_at: number }>();
   private readonly sessions = new Map<string, VipSession>();
-  private readonly users = new Map<string, { id: string; username: string; password_hash: string; code: string; plan_id: string }>();
+  private readonly users = new Map<string, { id: string; username: string; password_hash: string; code: string; plan_id: string; status: string; created_at: number }>();
   private readonly memberSessions = new Map<string, MemberSession>();
 
   async seedCodes(codes: string[]): Promise<void> {
@@ -389,7 +432,7 @@ class MemoryVipStore implements VipStore {
     const username = normalizeUsername(input.username);
     assertPassword(input.password);
     for (const user of this.users.values()) if (user.username === username) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "username already exists", 409);
-    const user = { id: randomToken(), username, password_hash: await hashPassword(input.password), code, plan_id: found.plan_id };
+    const user = { id: randomToken(), username, password_hash: await hashPassword(input.password), code, plan_id: found.plan_id, status: "active", created_at: now };
     this.users.set(user.id, user);
     found.used_count += 1;
     if (found.used_count >= found.max_uses) found.status = "used";
@@ -399,7 +442,7 @@ class MemoryVipStore implements VipStore {
   async login(input: LoginMemberInput): Promise<MemberSession | null> {
     const username = normalizeUsername(input.username);
     const user = [...this.users.values()].find((item) => item.username === username);
-    if (!user || !(await verifyPassword(input.password, user.password_hash))) return null;
+    if (!user || user.status !== "active" || !(await verifyPassword(input.password, user.password_hash))) return null;
     return this.createMemberSession(user);
   }
 
@@ -411,6 +454,8 @@ class MemoryVipStore implements VipStore {
     if (!token) return null;
     const session = this.memberSessions.get(token.trim());
     if (!session || session.expires_at < Date.now()) return null;
+    const user = this.users.get(session.user_id);
+    if (!user || user.status !== "active") return null;
     return session;
   }
 
@@ -423,6 +468,26 @@ class MemoryVipStore implements VipStore {
     const plan = normalizePlanInput(input, current);
     this.plans.set(plan.id, { ...plan });
     return { ...plan };
+  }
+
+  async listMembers(limit = 100): Promise<MemberUserInfo[]> {
+    return [...this.users.values()]
+      .sort((a, b) => b.created_at - a.created_at)
+      .slice(0, clampNumber(limit, 1, 500))
+      .map((user) => memoryMemberInfo(user, this.plans));
+  }
+
+  async updateMember(userId: string, input: { plan_id?: string; status?: string }): Promise<MemberUserInfo | null> {
+    const user = this.users.get(userId);
+    if (!user) return null;
+    if (input.plan_id) user.plan_id = normalizePlanId(input.plan_id);
+    if (input.status) user.status = normalizeMemberStatus(input.status);
+    if (user.status !== "active") {
+      for (const [token, session] of this.memberSessions.entries()) {
+        if (session.user_id === user.id) this.memberSessions.delete(token);
+      }
+    }
+    return memoryMemberInfo(user, this.plans);
   }
 
   async createActivationCode(input: ActivationCodeInput): Promise<ActivationCodeInfo> {
@@ -454,6 +519,31 @@ function rowToMemberSession(row: any): MemberSession {
     user_id: String(row.user_id),
     username: String(row.username),
     plan: rowToPlan(row),
+  };
+}
+
+function rowToMemberInfo(row: any): MemberUserInfo {
+  return {
+    id: String(row.member_id ?? row.user_id ?? row.id),
+    username: String(row.username),
+    code: String(row.code),
+    plan_id: String(row.user_plan_id ?? row.plan_id ?? row.id ?? "standard"),
+    status: String(row.status ?? "active"),
+    created_at: Number(row.user_created_at ?? row.created_at ?? Date.now()),
+    plan: rowToPlan(row),
+  };
+}
+
+function memoryMemberInfo(user: { id: string; username: string; code: string; plan_id: string; status: string; created_at: number }, plans: Map<string, MemberPlan>): MemberUserInfo {
+  const plan = plans.get(user.plan_id) ?? DEFAULT_PLANS[1];
+  return {
+    id: user.id,
+    username: user.username,
+    code: user.code,
+    plan_id: user.plan_id,
+    status: user.status,
+    created_at: user.created_at,
+    plan: { ...plan },
   };
 }
 
@@ -518,6 +608,12 @@ function normalizePlanId(value: string): string {
     throw new DouyinServiceError("UNSUPPORTED_CONTENT", "plan id must be 2-32 chars: letters, numbers, _ or -", 400);
   }
   return id;
+}
+
+function normalizeMemberStatus(value: string): string {
+  const status = value.trim().toLowerCase();
+  if (status === "active" || status === "disabled") return status;
+  throw new DouyinServiceError("UNSUPPORTED_CONTENT", "member status must be active or disabled", 400);
 }
 
 function normalizeExpiresAt(value: number | string | null | undefined): number | null {

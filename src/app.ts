@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
   DouyinServiceError,
+  cancelBatchTask,
   fetchDouyinComments,
   generateAiCopy,
   getBatchQueueSnapshot,
@@ -10,6 +11,7 @@ import {
   getCreatorStore,
   getVipStore,
   inspectBatchHomepage,
+  listBatchTasks,
   makeErrorResponse,
   parseDouyinUrl,
   proxyMediaUrl,
@@ -891,6 +893,95 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/admin/jobs", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      const requestUrl = new URL(c.req.url);
+      const limit = parsePositiveInt(requestUrl.searchParams.get("limit"), 50);
+      const tasks = await listBatchTasks(limit);
+      return c.json(success(tasks.map(adminTaskSummary)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/jobs/:id/cancel", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions);
+      const task = await cancelBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      await store.recordAudit({ actor: "admin", action: "batch_job_cancel", ip: getClientIp(c), detail: JSON.stringify({ task_id: task.id, owner_key: task.owner_key, status: task.status }) });
+      return c.json(success(adminTaskSummary(task)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/jobs/:id/retry", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions);
+      const original = await getBatchTask(c.req.param("id"));
+      if (!original) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      const publicRequestUrl = getPublicRequestUrl(c);
+      const task = await startBatchTask({
+        homepageUrl: original.homepage_url,
+        count: original.requested_count,
+        concurrency: original.concurrency,
+        parseOptions: parserOptions,
+        parseByAwemeId: async (awemeId) => parseForRequest(`https://www.douyin.com/video/${awemeId}`),
+        makeDownloadUrl: (parsed) => decorateParsedInfo(parsed, publicRequestUrl).download.download_url,
+        ownerKey: original.owner_key,
+        queuePriority: original.queue_priority,
+      });
+      await store.recordAudit({ actor: "admin", action: "batch_job_retry", ip: getClientIp(c), detail: JSON.stringify({ original_task_id: original.id, new_task_id: task.id, owner_key: task.owner_key }) });
+      return c.json(success(adminTaskSummary(task)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/admin/users", async (c) => {
+    try {
+      requireAdmin(c, adminSessions);
+      const requestUrl = new URL(c.req.url);
+      const limit = parsePositiveInt(requestUrl.searchParams.get("limit"), 100);
+      return c.json(success(await (await getStore()).listMembers(limit)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/users/:id/plan", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions);
+      const body = await readJsonBody(c);
+      const planId = asString(body.plan_id);
+      if (!planId) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "plan_id is required", 400);
+      const user = await (await getStore()).updateMember(c.req.param("id"), { plan_id: planId, status: asString(body.status) ?? undefined });
+      if (!user) throw new DouyinServiceError("PARSE_FAILED", "member user not found", 404);
+      await store.recordAudit({ actor: "admin", action: "member_plan_update", ip: getClientIp(c), detail: JSON.stringify({ user_id: user.id, username: user.username, plan_id: user.plan_id, status: user.status }) });
+      return c.json(success(user));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/users/:id/disable", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions);
+      const user = await (await getStore()).updateMember(c.req.param("id"), { status: "disabled" });
+      if (!user) throw new DouyinServiceError("PARSE_FAILED", "member user not found", 404);
+      await store.recordAudit({ actor: "admin", action: "member_disable", ip: getClientIp(c), detail: JSON.stringify({ user_id: user.id, username: user.username }) });
+      return c.json(success(user));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.get("/api/admin/plans", async (c) => {
     try {
       requireAdmin(c, adminSessions);
@@ -1100,6 +1191,36 @@ function profilePreviewItem(awemeId: string, parsed: ParsedDouyinInfo) {
     music_title: parsed.music.title,
     stats: { ...parsed.stats },
     error: null,
+  };
+}
+
+function adminTaskSummary(task: BatchTask) {
+  return {
+    id: task.id,
+    homepage_url: task.homepage_url,
+    owner_key: task.owner_key,
+    requested_count: task.requested_count,
+    concurrency: task.concurrency,
+    queue_priority: task.queue_priority,
+    queue_position: task.queue_position,
+    total_detected: task.total_detected,
+    status: task.status,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    started_at: task.started_at,
+    finished_at: task.finished_at,
+    completed_count: task.completed_count,
+    success_count: task.success_count,
+    failed_count: task.failed_count,
+    progress_percent: task.requested_count ? Math.round((task.completed_count / task.requested_count) * 100) : 0,
+    items_preview: task.items.slice(0, 20).map((item) => ({
+      aweme_id: item.aweme_id,
+      status: item.status,
+      title: item.title,
+      cover_url: item.cover_url,
+      download_url: item.download_url,
+      error: item.error,
+    })),
   };
 }
 

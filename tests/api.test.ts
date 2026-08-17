@@ -50,18 +50,18 @@ describe("api routes", () => {
     expect(html).toContain("choice");
   });
 
-  it("renders clean admin console with rate limit controls", async () => {
+  it("renders clean admin console with management controls", async () => {
     const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore: createMemoryCreatorStore() });
     const response = await app.request("/admin");
     const html = await response.text();
 
     expect(response.status).toBe(200);
-    expect(html).toContain("抖映灵感台后台");
-    expect(html).toContain("接口限流");
+    expect(html).toContain("&#25238;&#26144;&#28789;&#24863;&#21488;&#21518;&#21488;");
     expect(html).toContain("/api/admin/rate-limits");
-    expect(html).toContain("安全策略");
     expect(html).toContain("/api/admin/security");
-    expect(html).not.toContain("瑙ｆ瀽");
+    expect(html).toContain("/api/admin/jobs");
+    expect(html).toContain("/api/admin/users");
+    expect(html).not.toContain("???");
   });
 
   it("returns plain text no-watermark url on compatibility endpoint", async () => {
@@ -292,6 +292,83 @@ describe("api routes", () => {
       const usage = await app.request("/api/admin/usage?limit=5", { headers: { authorization: "Bearer test-admin-token" } });
       expect(usage.status).toBe(200);
       expect(Array.isArray((await usage.json()).data)).toBe(true);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+    }
+  });
+
+  it("lets admin list jobs and manage member users", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = "ops-admin-token";
+    try {
+      const store = await createMemoryVipStore(["OPS-1"]);
+      const fetcher = async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/aweme/v1/web/aweme/post/")) {
+          return new Response(JSON.stringify({ total: 1, aweme_list: [{ aweme_id: "7673000000000000001" }] }), {
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.includes("/user/")) {
+          return new Response('<html>{"sec_uid":"SEC_OPS","aweme_id":"7673000000000000001"}</html>', {
+            headers: { "content-type": "text/html" },
+          });
+        }
+        return new Response(VIDEO_HTML, { headers: { "content-type": "text/html" } });
+      };
+      const app = createApp({ fetcher, vipStore: store, creatorStore: createMemoryCreatorStore(), cacheTtlMs: 0 });
+      const register = await app.request("/api/v1/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ code: "OPS-1", username: "ops_user", password: "password123" }),
+      });
+      const registerBody = await register.json();
+      const token = registerBody.data.token;
+      const memberId = registerBody.data.member.user_id;
+      const headers = { authorization: `Bearer ${token}` };
+
+      const started = await app.request("/api/v1/batch/start", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_OPS", count: 1, concurrency: 1 }),
+      });
+      const taskId = (await started.json()).data.id;
+      for (let index = 0; index < 20; index += 1) {
+        const task = await app.request(`/api/v1/batch/${taskId}`, { headers });
+        const taskBody = await task.json();
+        if (taskBody.data.status === "completed" || taskBody.data.status === "failed") break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      const adminHeaders = { authorization: "Bearer ops-admin-token", "content-type": "application/json" };
+      const jobs = await app.request("/api/admin/jobs?limit=10", { headers: adminHeaders });
+      const jobsBody = await jobs.json();
+      expect(jobs.status).toBe(200);
+      expect(jobsBody.data.some((job: any) => job.id === taskId && job.progress_percent >= 0)).toBe(true);
+
+      const retry = await app.request(`/api/admin/jobs/${taskId}/retry`, { method: "POST", headers: adminHeaders });
+      expect(retry.status).toBe(200);
+      expect((await retry.json()).data.owner_key).toBe("OPS-1");
+
+      const users = await app.request("/api/admin/users?limit=10", { headers: adminHeaders });
+      const usersBody = await users.json();
+      expect(users.status).toBe(200);
+      expect(usersBody.data.some((user: any) => user.username === "ops_user" && user.plan_id === "standard")).toBe(true);
+
+      const plan = await app.request(`/api/admin/users/${memberId}/plan`, {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({ plan_id: "pro" }),
+      });
+      expect(plan.status).toBe(200);
+      expect((await plan.json()).data.plan_id).toBe("pro");
+
+      const disabled = await app.request(`/api/admin/users/${memberId}/disable`, { method: "POST", headers: adminHeaders });
+      expect(disabled.status).toBe(200);
+      expect((await disabled.json()).data.status).toBe("disabled");
+
+      const meAfterDisable = await app.request("/api/v1/me", { headers });
+      expect((await meAfterDisable.json()).data.session_type).toBe("guest");
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;

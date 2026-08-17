@@ -4,7 +4,7 @@ import type { ParsedDouyinInfo } from "./types.ts";
 import type { AiCopyResult } from "./creator.ts";
 
 export type BatchItemStatus = "pending" | "running" | "success" | "failed";
-export type BatchTaskStatus = "queued" | "running" | "completed" | "failed";
+export type BatchTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface BatchItem {
   aweme_id: string;
@@ -140,10 +140,42 @@ export async function getBatchTask(taskId: string): Promise<BatchTask | null> {
   return tasks.get(taskId) ?? null;
 }
 
+export async function listBatchTasks(limit = 100): Promise<BatchTask[]> {
+  await loadPersistedTasks();
+  updateQueuePositions();
+  return [...tasks.values()]
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    .slice(0, clamp(Math.floor(limit || 100), 1, 500));
+}
+
 export async function saveBatchTask(task: BatchTask): Promise<void> {
   await loadPersistedTasks();
   tasks.set(task.id, task);
   await persistTasks();
+}
+
+export async function cancelBatchTask(taskId: string): Promise<BatchTask | null> {
+  await loadPersistedTasks();
+  const task = tasks.get(taskId);
+  if (!task) return null;
+  if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") return task;
+  task.status = "cancelled";
+  task.queue_position = 0;
+  task.finished_at = new Date().toISOString();
+  for (const item of task.items) {
+    if (item.status === "pending" || item.status === "running") {
+      item.status = "failed";
+      item.error = "cancelled by admin";
+    }
+  }
+  task.completed_count = task.items.filter((item) => item.status === "success" || item.status === "failed").length;
+  task.success_count = task.items.filter((item) => item.status === "success").length;
+  task.failed_count = task.items.filter((item) => item.status === "failed").length;
+  executions.delete(task.id);
+  touch(task);
+  updateQueuePositions();
+  await persistTasks();
+  return task;
 }
 
 export async function getBatchQueueSnapshot(): Promise<BatchQueueSnapshot> {
@@ -158,8 +190,8 @@ export async function getBatchQueueSnapshot(): Promise<BatchQueueSnapshot> {
       .filter((task) => task.status === "queued" || task.status === "running")
       .sort(compareQueueTasks)
       .map((task) => ({
-        id: task.id,
-        status: task.status,
+    id: task.id,
+    status: task.status,
         queue_priority: task.queue_priority,
         queue_position: task.queue_position,
         owner_key: task.owner_key,
@@ -242,6 +274,7 @@ async function runTask(task: BatchTask, options: BatchStartOptions): Promise<voi
   let cursor = 0;
   const workers = Array.from({ length: task.concurrency }, async () => {
     while (cursor < task.items.length) {
+      if (isTaskCancelled(task)) break;
       const item = task.items[cursor++];
       if (!item) continue;
       item.status = "running";
@@ -264,7 +297,11 @@ async function runTask(task: BatchTask, options: BatchStartOptions): Promise<voi
         item.status = "failed";
         item.error = error instanceof Error ? error.message : String(error);
       } finally {
-        task.completed_count += 1;
+        if (isTaskCancelled(task)) {
+          item.status = "failed";
+          item.error ??= "cancelled by admin";
+        }
+        task.completed_count = task.items.filter((entry) => entry.status === "success" || entry.status === "failed").length;
         task.success_count = task.items.filter((entry) => entry.status === "success").length;
         task.failed_count = task.items.filter((entry) => entry.status === "failed").length;
         touch(task);
@@ -272,7 +309,7 @@ async function runTask(task: BatchTask, options: BatchStartOptions): Promise<voi
     }
   });
   await Promise.all(workers);
-  task.status = task.failed_count === task.items.length ? "failed" : "completed";
+  if (!isTaskCancelled(task)) task.status = task.failed_count === task.items.length ? "failed" : "completed";
   task.finished_at = new Date().toISOString();
   touch(task);
 }
@@ -280,6 +317,10 @@ async function runTask(task: BatchTask, options: BatchStartOptions): Promise<voi
 function touch(task: BatchTask): void {
   task.updated_at = new Date().toISOString();
   schedulePersist();
+}
+
+function isTaskCancelled(task: BatchTask): boolean {
+  return task.status === "cancelled";
 }
 
 function createEmptyBatchItem(awemeId: string): BatchItem {
@@ -343,7 +384,7 @@ function normalizeTask(value: unknown): BatchTask | null {
   const completedCount = Number(record.completed_count ?? items.filter((item) => item.status === "success" || item.status === "failed").length);
   const successCount = Number(record.success_count ?? items.filter((item) => item.status === "success").length);
   const failedCount = Number(record.failed_count ?? items.filter((item) => item.status === "failed").length);
-  let status = (record.status === "queued" || record.status === "running" || record.status === "completed" || record.status === "failed" ? record.status : "completed") as BatchTaskStatus;
+  let status = (record.status === "queued" || record.status === "running" || record.status === "completed" || record.status === "failed" || record.status === "cancelled" ? record.status : "completed") as BatchTaskStatus;
   if (status === "queued" || status === "running") status = "failed";
   return {
     id,
