@@ -284,6 +284,66 @@ describe("api routes", () => {
     }
   });
 
+  it("locks admin login after repeated credential failures and writes audit logs", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    const oldUser = process.env.ADMIN_USERNAME;
+    const oldPassword = process.env.ADMIN_PASSWORD;
+    const oldTotp = process.env.ADMIN_TOTP_SECRET;
+    const oldMaxFailures = process.env.ADMIN_LOGIN_MAX_FAILURES;
+    const oldLockMinutes = process.env.ADMIN_LOGIN_LOCK_MINUTES;
+    process.env.ADMIN_TOKEN = "admin-lock-audit-token";
+    process.env.ADMIN_USERNAME = "admin";
+    process.env.ADMIN_PASSWORD = "correct-password";
+    delete process.env.ADMIN_TOTP_SECRET;
+    process.env.ADMIN_LOGIN_MAX_FAILURES = "2";
+    process.env.ADMIN_LOGIN_LOCK_MINUTES = "1";
+    try {
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML) });
+      const headers = { "x-forwarded-for": "203.0.113.77", "content-type": "application/json" };
+
+      const first = await app.request("/api/admin/login", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ username: "admin", password: "bad-1" }),
+      });
+      const second = await app.request("/api/admin/login", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ username: "admin", password: "bad-2" }),
+      });
+      const locked = await app.request("/api/admin/login", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ username: "admin", password: "correct-password" }),
+      });
+      const lockedBody = await locked.json();
+
+      expect(first.status).toBe(403);
+      expect(second.status).toBe(403);
+      expect(locked.status).toBe(429);
+      expect(lockedBody.error.detail).toContain("temporarily locked");
+
+      const audit = await app.request("/api/admin/audit-logs?limit=10", { headers: { authorization: "Bearer admin-lock-audit-token" } });
+      const auditBody = await audit.json();
+      expect(audit.status).toBe(200);
+      expect(auditBody.data.some((entry: any) => entry.action === "admin_login_locked" && entry.ip === "203.0.113.77")).toBe(true);
+      expect(auditBody.data.some((entry: any) => entry.action === "admin_login_failed" && entry.detail.includes('"failure_count":2'))).toBe(true);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+      if (oldUser === undefined) delete process.env.ADMIN_USERNAME;
+      else process.env.ADMIN_USERNAME = oldUser;
+      if (oldPassword === undefined) delete process.env.ADMIN_PASSWORD;
+      else process.env.ADMIN_PASSWORD = oldPassword;
+      if (oldTotp === undefined) delete process.env.ADMIN_TOTP_SECRET;
+      else process.env.ADMIN_TOTP_SECRET = oldTotp;
+      if (oldMaxFailures === undefined) delete process.env.ADMIN_LOGIN_MAX_FAILURES;
+      else process.env.ADMIN_LOGIN_MAX_FAILURES = oldMaxFailures;
+      if (oldLockMinutes === undefined) delete process.env.ADMIN_LOGIN_LOCK_MINUTES;
+      else process.env.ADMIN_LOGIN_LOCK_MINUTES = oldLockMinutes;
+    }
+  });
+
   it("fetches video comments and collects them into a batch task export", async () => {
     const store = await createMemoryVipStore(["COMMENT-1"]);
     const fetcher = async (input: RequestInfo | URL) => {

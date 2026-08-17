@@ -47,10 +47,14 @@ export function createApp(options: CreateAppOptions = {}) {
   const onlineBaseCount = options.onlineBaseCount ?? parsePositiveInt(getRuntimeEnv().ONLINE_BASE_COUNT, 0);
   const creatorStorePromise = getCreatorStore();
   const adminSessions = new Map<string, number>();
+  const adminLoginFailures = new Map<string, { count: number; resetAt: number; lockedUntil: number }>();
   const rateBuckets = new Map<string, { resetAt: number; count: number }>();
   const parseRateLimit = parsePositiveInt(getRuntimeEnv().PARSE_RATE_LIMIT_PER_MINUTE, 60);
   const mediaRateLimit = parsePositiveInt(getRuntimeEnv().MEDIA_RATE_LIMIT_PER_MINUTE, 120);
   const batchRateLimit = parsePositiveInt(getRuntimeEnv().BATCH_RATE_LIMIT_PER_HOUR, 30);
+  const adminLoginMaxFailures = parsePositiveInt(getRuntimeEnv().ADMIN_LOGIN_MAX_FAILURES, 5);
+  const adminLoginWindowMs = parsePositiveInt(getRuntimeEnv().ADMIN_LOGIN_WINDOW_MINUTES, 15) * 60 * 1000;
+  const adminLoginLockMs = parsePositiveInt(getRuntimeEnv().ADMIN_LOGIN_LOCK_MINUTES, 10) * 60 * 1000;
 
   const recordUsage = async (input: { kind: string; user_key?: string; ip: string; path: string; status: number; detail?: string | null }) => {
     try {
@@ -69,6 +73,39 @@ export function createApp(options: CreateAppOptions = {}) {
 
   const enforcePublicRateLimit = (kind: string, c: Context, limit: number, windowMs = 60_000, cost = 1) => {
     enforceRateLimit(rateBuckets, `${kind}:${getClientIp(c)}`, limit, windowMs, cost);
+  };
+
+  const adminLoginKey = (ip: string, username: string | null) => `admin-login:${ip}:${username ?? "unknown"}`;
+
+  const assertAdminLoginAllowed = (key: string) => {
+    const now = Date.now();
+    const failure = adminLoginFailures.get(key);
+    if (!failure) return;
+    if (failure.lockedUntil > now) {
+      throw new DouyinServiceError("UNSUPPORTED_CONTENT", `admin login is temporarily locked until ${new Date(failure.lockedUntil).toISOString()}`, 429);
+    }
+    if (failure.resetAt <= now) adminLoginFailures.delete(key);
+  };
+
+  const recordAdminLoginFailure = (key: string) => {
+    const now = Date.now();
+    const current = adminLoginFailures.get(key);
+    const failure =
+      !current || current.resetAt <= now
+        ? { count: 0, resetAt: now + adminLoginWindowMs, lockedUntil: 0 }
+        : current;
+    failure.count += 1;
+    if (failure.count >= adminLoginMaxFailures) failure.lockedUntil = now + adminLoginLockMs;
+    adminLoginFailures.set(key, failure);
+    return {
+      failure_count: failure.count,
+      locked_until: failure.lockedUntil ? new Date(failure.lockedUntil).toISOString() : null,
+      reset_at: new Date(failure.resetAt).toISOString(),
+    };
+  };
+
+  const clearAdminLoginFailure = (key: string) => {
+    adminLoginFailures.delete(key);
   };
 
   const cleanupOnlineSessions = () => {
@@ -576,11 +613,16 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/api/admin/login", async (c) => {
     const store = await creatorStorePromise;
+    const ip = getClientIp(c);
+    let username: string | null = null;
+    let loginKey = adminLoginKey(ip, null);
     try {
       const body = await readJsonBody(c);
-      const username = asString(body.username);
+      username = asString(body.username);
       const password = asString(body.password);
       const totp = asString(body.totp);
+      loginKey = adminLoginKey(ip, username);
+      assertAdminLoginAllowed(loginKey);
       const env = getRuntimeEnv();
       const expectedUser = env.ADMIN_USERNAME ?? "admin";
       const expectedPassword = env.ADMIN_PASSWORD;
@@ -591,14 +633,29 @@ export function createApp(options: CreateAppOptions = {}) {
       if (env.ADMIN_TOTP_SECRET && !(await verifyTotpCode(env.ADMIN_TOTP_SECRET, totp))) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin totp code is invalid", 403);
       }
+      clearAdminLoginFailure(loginKey);
       const token = randomId();
       const expiresAt = Date.now() + 8 * 60 * 60 * 1000;
       adminSessions.set(token, expiresAt);
       c.header("set-cookie", buildAdminCookie(token, 8 * 60 * 60, getPublicRequestUrl(c)));
-      await store.recordAudit({ actor: username, action: "admin_login", ip: getClientIp(c), detail: "success" });
+      await store.recordAudit({ actor: username, action: "admin_login", ip, detail: "success" });
       return c.json(success({ token, expires_at: new Date(expiresAt).toISOString(), totp_enabled: Boolean(env.ADMIN_TOTP_SECRET) }));
     } catch (error) {
-      await store.recordAudit({ actor: "admin", action: "admin_login_failed", ip: getClientIp(c), detail: error instanceof Error ? error.message : String(error) });
+      const serviceError = toServiceError(error);
+      const loginFailed = serviceError.status === 403 && /credentials|totp/.test(serviceError.detail);
+      const locked = serviceError.status === 429 && serviceError.detail.includes("temporarily locked");
+      const failure = loginFailed ? recordAdminLoginFailure(loginKey) : null;
+      await store.recordAudit({
+        actor: username ?? "admin",
+        action: locked ? "admin_login_locked" : "admin_login_failed",
+        ip,
+        detail: JSON.stringify({
+          detail: serviceError.detail,
+          status: serviceError.status,
+          failure_count: failure?.failure_count ?? null,
+          locked_until: failure?.locked_until ?? null,
+        }),
+      });
       return jsonError(c, error);
     }
   });
