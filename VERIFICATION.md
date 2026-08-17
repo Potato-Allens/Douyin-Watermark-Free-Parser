@@ -503,3 +503,21 @@ Functional coverage added:
 - queue_priority and queue_position persisted on batch tasks.
 - GET/POST batch comment import/read routes, covered by API tests.
 - UI keeps video preview as the center stage and lets profile work cards load into the center preview.
+
+## 2026-08-17 22:25 +08:00 - Visual UI scheme chooser
+
+Changed branch: main
+Changed files:
+- src/designs-ui.ts
+- src/app.ts
+- tests/api.test.ts
+
+Local verification:
+- Command: pnpm test
+- Result: exit 0; 2 test files passed; 26 tests passed.
+- Command: pnpm build
+- Result: exit 0; tsx scripts/build-vercel.ts and tsc --noEmit passed.
+
+Functional coverage added:
+- GET /designs renders four selectable UI directions A/B/C/D.
+- Scheme C is highlighted as the recommended video-centered creator panel direction.

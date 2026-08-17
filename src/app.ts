@@ -19,6 +19,7 @@ import {
 } from "./core/index.ts";
 import type { ApiSuccessResponse, BatchComment, BatchItem, BatchTask, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, VipSession, VipStore } from "./core/index.ts";
 import { renderAdminPage } from "./admin-ui.ts";
+import { renderDesignsPage } from "./designs-ui.ts";
 import { renderHomePage } from "./ui.ts";
 
 export interface CreateAppOptions {
@@ -91,6 +92,8 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/admin", (c) => c.html(renderAdminPage()));
+
+  app.get("/designs", (c) => c.html(renderDesignsPage()));
 
   app.get("/api/hello", async (c) => {
     return handleCompat(c.req.url, parseForRequest);

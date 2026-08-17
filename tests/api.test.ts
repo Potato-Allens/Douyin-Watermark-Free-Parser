@@ -25,6 +25,17 @@ describe("api routes", () => {
     expect(await response.text()).toBe("请提供url参数");
   });
 
+  it("renders visual design choices page", async () => {
+    const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML) });
+    const response = await app.request("/designs");
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("scheme recommended");
+    expect(html).toContain("mock c");
+    expect(html).toContain("choice");
+  });
+
   it("returns plain text no-watermark url on compatibility endpoint", async () => {
     const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML) });
     const response = await app.request(`/?url=${encodedUrl}`);
