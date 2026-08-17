@@ -142,6 +142,62 @@ describe("api routes", () => {
     }
   });
 
+  it("protects cookie-based admin mutations with a CSRF token", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    const oldUser = process.env.ADMIN_USERNAME;
+    const oldPassword = process.env.ADMIN_PASSWORD;
+    const oldTotp = process.env.ADMIN_TOTP_SECRET;
+    delete process.env.ADMIN_TOKEN;
+    process.env.ADMIN_USERNAME = "admin";
+    process.env.ADMIN_PASSWORD = "csrf-admin-password";
+    delete process.env.ADMIN_TOTP_SECRET;
+    try {
+      const creatorStore = createMemoryCreatorStore();
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore });
+
+      const login = await app.request("/api/admin/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "csrf-admin-password" }),
+      });
+      const loginBody = await login.json();
+      const csrf = loginBody.data.csrf_token;
+      const cookie = `admin_token=${loginBody.data.token}; admin_csrf=${csrf}`;
+
+      expect(login.status).toBe(200);
+      expect(csrf).toBeTruthy();
+      expect(login.headers.get("set-cookie")).toContain("admin_csrf=");
+
+      const read = await app.request("/api/admin/rate-limits", { headers: { cookie } });
+      expect(read.status).toBe(200);
+
+      const blocked = await app.request("/api/admin/rate-limits", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ parse_per_minute: 5 }),
+      });
+      expect(blocked.status).toBe(403);
+      expect((await blocked.json()).error.detail).toContain("csrf token");
+
+      const allowed = await app.request("/api/admin/rate-limits", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+        body: JSON.stringify({ parse_per_minute: 5 }),
+      });
+      expect(allowed.status).toBe(200);
+      expect((await allowed.json()).data.parse_per_minute).toBe(5);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+      if (oldUser === undefined) delete process.env.ADMIN_USERNAME;
+      else process.env.ADMIN_USERNAME = oldUser;
+      if (oldPassword === undefined) delete process.env.ADMIN_PASSWORD;
+      else process.env.ADMIN_PASSWORD = oldPassword;
+      if (oldTotp === undefined) delete process.env.ADMIN_TOTP_SECRET;
+      else process.env.ADMIN_TOTP_SECRET = oldTotp;
+    }
+  });
+
   it("returns plain text no-watermark url on compatibility endpoint", async () => {
     const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML) });
     const response = await app.request(`/?url=${encodedUrl}`);
@@ -342,6 +398,43 @@ describe("api routes", () => {
     const meBody = await me.json();
     expect(meBody.data.session_type).toBe("member");
     expect(meBody.data.permissions.ai_daily_quota).toBe(200);
+  });
+
+  it("issues a member CSRF token and protects cookie-based member mutations", async () => {
+    const store = await createMemoryVipStore(["CSRF-MEMBER-1"]);
+    const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), vipStore: store, creatorStore: createMemoryCreatorStore() });
+
+    const register = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "CSRF-MEMBER-1", username: "csrf_member", password: "password123" }),
+    });
+    const body = await register.json();
+    const csrf = body.data.csrf_token;
+    const cookie = `vip_token=${body.data.token}; vip_csrf=${csrf}`;
+
+    expect(register.status).toBe(200);
+    expect(csrf).toBeTruthy();
+    expect(register.headers.get("set-cookie")).toContain("vip_csrf=");
+
+    const read = await app.request("/api/v1/me", { headers: { cookie } });
+    expect(read.status).toBe(200);
+
+    const blocked = await app.request("/api/v1/ai/script", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/", mode: "script" }),
+    });
+    expect(blocked.status).toBe(403);
+    expect((await blocked.json()).error.detail).toContain("csrf token");
+
+    const allowed = await app.request("/api/v1/ai/script", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/", mode: "script" }),
+    });
+    expect(allowed.status).toBe(200);
+    expect((await allowed.json()).data.rewritten_script).toBeTruthy();
   });
 
   it("lets admin manage member plans and activation codes with admin token", async () => {

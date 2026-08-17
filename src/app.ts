@@ -316,11 +316,13 @@ export function createApp(options: CreateAppOptions = {}) {
       const session = await (await getStore()).activate(code);
       if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "activation code is invalid or already used", 403);
       const maxAge = Math.max(1, Math.floor((session.expires_at - Date.now()) / 1000));
-      c.header("set-cookie", buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)));
+      const csrfToken = randomId();
+      appendSetCookies(c, [buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)), buildCsrfCookie("vip_csrf", csrfToken, maxAge, getPublicRequestUrl(c))]);
       return c.json(
         success({
           activated: true,
           token: session.token,
+          csrf_token: csrfToken,
           code: session.code,
           expires_at: new Date(session.expires_at).toISOString(),
         }),
@@ -372,8 +374,9 @@ export function createApp(options: CreateAppOptions = {}) {
       const session = await (await getStore()).registerWithCode({ code, username, password });
       if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "activation code is invalid or already used", 403);
       const maxAge = Math.max(1, Math.floor((session.expires_at - Date.now()) / 1000));
-      c.header("set-cookie", buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)));
-      return c.json(success(memberSessionPayload(session)));
+      const csrfToken = randomId();
+      appendSetCookies(c, [buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)), buildCsrfCookie("vip_csrf", csrfToken, maxAge, getPublicRequestUrl(c))]);
+      return c.json(success(memberSessionPayload(session, csrfToken)));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -389,15 +392,16 @@ export function createApp(options: CreateAppOptions = {}) {
       const session = await (await getStore()).login({ username, password });
       if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "username or password is invalid", 403);
       const maxAge = Math.max(1, Math.floor((session.expires_at - Date.now()) / 1000));
-      c.header("set-cookie", buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)));
-      return c.json(success(memberSessionPayload(session)));
+      const csrfToken = randomId();
+      appendSetCookies(c, [buildVipCookie(session.token, maxAge, getPublicRequestUrl(c)), buildCsrfCookie("vip_csrf", csrfToken, maxAge, getPublicRequestUrl(c))]);
+      return c.json(success(memberSessionPayload(session, csrfToken)));
     } catch (error) {
       return jsonError(c, error);
     }
   });
 
   app.post("/api/v1/auth/logout", (c) => {
-    c.header("set-cookie", clearVipCookie(getPublicRequestUrl(c)));
+    appendSetCookies(c, [clearVipCookie(getPublicRequestUrl(c)), clearCsrfCookie("vip_csrf", getPublicRequestUrl(c))]);
     return c.json(success({ logged_out: true }));
   });
 
@@ -423,7 +427,7 @@ export function createApp(options: CreateAppOptions = {}) {
     let sessionKey = "unknown";
     try {
       await guardPublicAccess(c, "batch_inspect");
-      const session = await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore(), { mutation: true });
       sessionKey = session.code;
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
@@ -443,7 +447,7 @@ export function createApp(options: CreateAppOptions = {}) {
     let sessionKey = "unknown";
     try {
       await guardPublicAccess(c, "profile_preview");
-      const session = await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore(), { mutation: true });
       sessionKey = session.code;
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
@@ -486,7 +490,7 @@ export function createApp(options: CreateAppOptions = {}) {
     let sessionKey = "unknown";
     try {
       await guardPublicAccess(c, "batch_start");
-      const session = await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore(), { mutation: true });
       sessionKey = session.code;
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
@@ -559,7 +563,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = await creatorStorePromise;
     try {
       await guardPublicAccess(c, "batch_ai");
-      const session = await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore(), { mutation: true });
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       assertBatchTaskAccess(task, session);
@@ -633,7 +637,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/v1/batch/:id/comments/import", async (c) => {
     try {
       await guardPublicAccess(c, "batch_comments_import");
-      const session = await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore(), { mutation: true });
       if (isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment import/export", 403);
       }
@@ -664,7 +668,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = await creatorStorePromise;
     try {
       await guardPublicAccess(c, "ai_script");
-      const session = await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore(), { mutation: true });
       const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
       if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
       await enforceMemberRateLimit("ai", c, session, aiQuota, 24 * 60 * 60 * 1000);
@@ -746,9 +750,10 @@ export function createApp(options: CreateAppOptions = {}) {
       const token = randomId();
       const expiresAt = Date.now() + 8 * 60 * 60 * 1000;
       adminSessions.set(token, expiresAt);
-      c.header("set-cookie", buildAdminCookie(token, 8 * 60 * 60, getPublicRequestUrl(c)));
+      const csrfToken = randomId();
+      appendSetCookies(c, [buildAdminCookie(token, 8 * 60 * 60, getPublicRequestUrl(c)), buildCsrfCookie("admin_csrf", csrfToken, 8 * 60 * 60, getPublicRequestUrl(c))]);
       await store.recordAudit({ actor: username, action: "admin_login", ip, detail: "success" });
-      return c.json(success({ token, expires_at: new Date(expiresAt).toISOString(), totp_enabled: Boolean(env.ADMIN_TOTP_SECRET) }));
+      return c.json(success({ token, csrf_token: csrfToken, expires_at: new Date(expiresAt).toISOString(), totp_enabled: Boolean(env.ADMIN_TOTP_SECRET) }));
     } catch (error) {
       const serviceError = toServiceError(error);
       const loginFailed = serviceError.status === 403 && /credentials|totp/.test(serviceError.detail);
@@ -781,7 +786,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/settings/llm", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const body = await readJsonBody(c);
       const data = await store.saveLlmSettings(body);
       await store.recordAudit({
@@ -806,7 +811,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/settings/llm/test", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const body = await readJsonBody(c);
       const data = await testLlmSettings(body, store, parserOptions.fetcher);
       await store.recordAudit({ actor: "admin", action: "llm_settings_test", ip: getClientIp(c), detail: JSON.stringify({ base_url: data.base_url, model: data.model, latency_ms: data.latency_ms }) });
@@ -828,7 +833,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/rate-limits", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const body = await readJsonBody(c);
       const data = await store.saveRateLimitSettings({
         parse_per_minute: body.parse_per_minute as number | undefined,
@@ -856,7 +861,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/security", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const body = await readJsonBody(c);
       const data = await store.saveSecuritySettings({
         blocked_ips: (body.blocked_ips as string[] | string | undefined) ?? undefined,
@@ -874,7 +879,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/block-ip", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const body = await readJsonBody(c);
       const ip = asString(body.ip);
       if (!ip) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "ip is required", 400);
@@ -900,7 +905,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = await creatorStorePromise;
     try {
       await guardPublicAccess(c, "batch_comments_collect");
-      const session = await requireVip(c, await getStore());
+      const session = await requireVip(c, await getStore(), { mutation: true });
       if (isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment collection", 403);
       }
@@ -971,7 +976,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/jobs/:id/cancel", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const task = await cancelBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       await store.recordAudit({ actor: "admin", action: "batch_job_cancel", ip: getClientIp(c), detail: JSON.stringify({ task_id: task.id, owner_key: task.owner_key, status: task.status }) });
@@ -984,7 +989,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/jobs/:id/retry", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const original = await getBatchTask(c.req.param("id"));
       if (!original) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       const publicRequestUrl = getPublicRequestUrl(c);
@@ -1019,7 +1024,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/users/:id/plan", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const body = await readJsonBody(c);
       const planId = asString(body.plan_id);
       if (!planId) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "plan_id is required", 400);
@@ -1035,7 +1040,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/users/:id/disable", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const user = await (await getStore()).updateMember(c.req.param("id"), { status: "disabled" });
       if (!user) throw new DouyinServiceError("PARSE_FAILED", "member user not found", 404);
       await store.recordAudit({ actor: "admin", action: "member_disable", ip: getClientIp(c), detail: JSON.stringify({ user_id: user.id, username: user.username }) });
@@ -1057,7 +1062,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/plans", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const body = await readJsonBody(c);
       const plan = await (await getStore()).savePlan({
         id: asString(body.id) ?? "standard",
@@ -1091,7 +1096,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/admin/codes", async (c) => {
     const store = await creatorStorePromise;
     try {
-      requireAdmin(c, adminSessions);
+      requireAdmin(c, adminSessions, { mutation: true });
       const body = await readJsonBody(c);
       const code = asString(body.code);
       if (!code) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "activation code is required", 400);
@@ -1627,9 +1632,11 @@ async function readJsonBody(c: Context): Promise<Record<string, unknown>> {
   }
 }
 
-async function requireVip(c: Context, store: VipStore): Promise<VipSession | MemberSession> {
-  const session = await store.verify(readVipToken(c.req.raw));
+async function requireVip(c: Context, store: VipStore, options: { mutation?: boolean } = {}): Promise<VipSession | MemberSession> {
+  const auth = readVipAuth(c.req.raw);
+  const session = await store.verify(auth.token);
   if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "membership activation is required for batch parsing", 403);
+  if (options.mutation && auth.source === "cookie") enforceCsrf(c, "vip_csrf");
   return session;
 }
 
@@ -1637,10 +1644,11 @@ function isMemberSession(session: VipSession | MemberSession | null | undefined)
   return Boolean(session && "user_id" in session && "plan" in session);
 }
 
-function memberSessionPayload(session: MemberSession) {
-  return {
+function memberSessionPayload(session: MemberSession, csrfToken?: string) {
+  const payload = {
     activated: true,
     token: session.token,
+    csrf_token: csrfToken ?? null,
     code: session.code,
     expires_at: new Date(session.expires_at).toISOString(),
     member: {
@@ -1650,6 +1658,7 @@ function memberSessionPayload(session: MemberSession) {
     },
     permissions: permissionsForSession(session),
   };
+  return payload;
 }
 
 function permissionsForSession(session: VipSession | MemberSession | null | undefined) {
@@ -1702,40 +1711,77 @@ function getBatchAiLimit(session: VipSession | MemberSession): number {
   return permissionsForSession(session).batch_ai_limit;
 }
 
-function readVipToken(request: Request): string | null {
+type TokenSource = "bearer" | "cookie";
+
+function readVipAuth(request: Request): { token: string | null; source: TokenSource | null } {
   const auth = request.headers.get("authorization") ?? "";
   const bearer = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim();
-  if (bearer) return bearer;
-  const cookie = request.headers.get("cookie") ?? "";
-  for (const part of cookie.split(";")) {
-    const [rawKey, ...rawValue] = part.trim().split("=");
-    if (rawKey === "vip_token") return decodeURIComponent(rawValue.join("="));
-  }
-  return null;
+  if (bearer) return { token: bearer, source: "bearer" };
+  const cookieToken = readCookieValue(request, "vip_token");
+  return { token: cookieToken, source: cookieToken ? "cookie" : null };
 }
 
-function requireAdmin(c: Context, sessions: Map<string, number>): void {
+function readVipToken(request: Request): string | null {
+  return readVipAuth(request).token;
+}
+
+function requireAdmin(c: Context, sessions: Map<string, number>, options: { mutation?: boolean } = {}): void {
   const envToken = getRuntimeEnv().ADMIN_TOKEN;
-  const token = readAdminToken(c.req.raw);
-  if (envToken && token === envToken) return;
-  if (token) {
-    const expiresAt = sessions.get(token);
-    if (expiresAt && expiresAt > Date.now()) return;
-    if (expiresAt) sessions.delete(token);
+  const auth = readAdminAuth(c.req.raw);
+  if (envToken && auth.source === "bearer" && auth.token === envToken) return;
+  if (auth.token) {
+    const expiresAt = sessions.get(auth.token);
+    if (expiresAt && expiresAt > Date.now()) {
+      if (options.mutation && auth.source === "cookie") enforceCsrf(c, "admin_csrf");
+      return;
+    }
+    if (expiresAt) sessions.delete(auth.token);
   }
   throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin login is required", 403);
 }
 
-function readAdminToken(request: Request): string | null {
+function readAdminAuth(request: Request): { token: string | null; source: TokenSource | null } {
   const auth = request.headers.get("authorization") ?? "";
   const bearer = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim();
-  if (bearer) return bearer;
+  if (bearer) return { token: bearer, source: "bearer" };
+  const cookieToken = readCookieValue(request, "admin_token");
+  return { token: cookieToken, source: cookieToken ? "cookie" : null };
+}
+
+function readCookieValue(request: Request, name: string): string | null {
   const cookie = request.headers.get("cookie") ?? "";
   for (const part of cookie.split(";")) {
     const [rawKey, ...rawValue] = part.trim().split("=");
-    if (rawKey === "admin_token") return decodeURIComponent(rawValue.join("="));
+    if (rawKey === name) return safeDecode(rawValue.join("="));
   }
   return null;
+}
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function enforceCsrf(c: Context, cookieName: "vip_csrf" | "admin_csrf"): void {
+  const headerToken = c.req.header("x-csrf-token")?.trim() ?? "";
+  const cookieToken = readCookieValue(c.req.raw, cookieName) ?? "";
+  if (!headerToken || !cookieToken || !constantTimeStringEqual(headerToken, cookieToken)) {
+    throw new DouyinServiceError("UNSUPPORTED_CONTENT", "csrf token is required for cookie session mutations", 403);
+  }
+}
+
+function constantTimeStringEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let index = 0; index < a.length; index += 1) diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  return diff === 0;
+}
+
+function appendSetCookies(c: Context, cookies: string[]): void {
+  cookies.forEach((cookie) => c.header("set-cookie", cookie, { append: true }));
 }
 
 function buildVipCookie(token: string, maxAge: number, requestUrl: string): string {
@@ -1751,6 +1797,16 @@ function clearVipCookie(requestUrl: string): string {
 function buildAdminCookie(token: string, maxAge: number, requestUrl: string): string {
   const secure = new URL(requestUrl).protocol === "https:" ? "; Secure" : "";
   return `admin_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+}
+
+function buildCsrfCookie(name: "vip_csrf" | "admin_csrf", token: string, maxAge: number, requestUrl: string): string {
+  const secure = new URL(requestUrl).protocol === "https:" ? "; Secure" : "";
+  return `${name}=${encodeURIComponent(token)}; Path=/; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+}
+
+function clearCsrfCookie(name: "vip_csrf" | "admin_csrf", requestUrl: string): string {
+  const secure = new URL(requestUrl).protocol === "https:" ? "; Secure" : "";
+  return `${name}=; Path=/; SameSite=Strict; Max-Age=0${secure}`;
 }
 
 function getClientIp(c: Context): string {
