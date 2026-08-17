@@ -190,3 +190,55 @@ media proxy: 206 Partial Content, Content-Type=video/mp4, Content-Range=bytes 0-
 ```
 
 本机 Docker Desktop 当前 daemon 未启动，因此本机 `pnpm verify:docker` 停在 Docker API 连接阶段；线上使用服务器已有 Node.js 22 + pnpm + 宝塔 Nginx 方式运行。
+
+
+## 2026-08-17 20:54 ??????
+
+### ????
+
+- ?????????????????????`ONLINE_BASE_COUNT=0`????? `/api/v1/online/ping` ?????
+- ???????? `@media(max-width:720px)`?????????????????????????????????
+- ??????????/??????????????????????
+- ?? HTTPS ????Nginx ???? `X-Forwarded-Proto: https` ? `X-Forwarded-Host`????? `https://` ???????
+
+### ??????
+
+```powershell
+pnpm test
+pnpm build
+```
+
+???`tests/parser.test.ts`?`tests/api.test.ts` ? `21 passed`?`tsc --noEmit` ???
+
+### ??????
+
+???`https://dy.devforai.cn`
+
+```powershell
+Invoke-WebRequest -UseBasicParsing -Uri "https://dy.devforai.cn/healthz"
+Invoke-WebRequest -UseBasicParsing -Uri "https://dy.devforai.cn/"
+Invoke-WebRequest -UseBasicParsing -Uri "https://dy.devforai.cn/api/v1/online"
+Invoke-WebRequest -UseBasicParsing -Method Post -Uri "https://dy.devforai.cn/api/v1/online/ping" -ContentType "application/json" -Body '{"client_id":"codex-verify-mobile"}'
+Invoke-WebRequest -UseBasicParsing -Uri "https://dy.devforai.cn/api/v1/parse?url=https%3A%2F%2Fv.douyin.com%2FjC_sgt3I3PQ%2F"
+curl.exe -I -r 0-1023 "<download.video_proxy_url>"
+```
+
+???
+
+```json
+{
+  "healthStatus": 200,
+  "rootStatus": 200,
+  "hasTitle": true,
+  "hasOnlineElement": true,
+  "hasFakeCurrentOnline": false,
+  "hasMobileMedia": true,
+  "captionOutsideVideo": true,
+  "onlineGetStatus": 200,
+  "onlinePingStatus": 200,
+  "parseStatus": 200,
+  "awemeId": "6914948781100338440",
+  "proxyScheme": "https",
+  "mediaHead": "HTTP/1.1 206 Partial Content | Content-Type: video/mp4 | Content-Range: bytes 0-1023/844227"
+}
+```
