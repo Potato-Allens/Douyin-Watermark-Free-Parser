@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
   DouyinServiceError,
+  fetchDouyinComments,
   generateAiCopy,
   getBatchQueueSnapshot,
   getBatchTask,
@@ -475,6 +476,7 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/api/v1/comments", async (c) => {
+    const store = await creatorStorePromise;
     try {
       const session = await requireVip(c, await getStore());
       if (isMemberSession(session) && !session.plan.comment_export) {
@@ -490,16 +492,20 @@ export function createApp(options: CreateAppOptions = {}) {
         const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
         return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })) }));
       }
-      return c.json(
-        success({
-          aweme_id: awemeId ?? null,
-          input_url: inputUrl ?? null,
-          comments: [],
-          next_cursor: null,
-          note: "评论采集队列接口已预留，后续接入真实评论源后会写入批量任务导出。",
-        }),
-      );
+      let targetAwemeId = awemeId;
+      if (!targetAwemeId && inputUrl) {
+        const parsed = await parseForRequest(inputUrl);
+        targetAwemeId = parsed.source.aweme_id;
+      }
+      if (!targetAwemeId) throw new DouyinServiceError("MISSING_URL", "aweme_id or url query parameter is required");
+      const count = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 20), 100);
+      const cursor = parsePositiveInt(requestUrl.searchParams.get("cursor"), 0);
+      enforceRateLimit(rateBuckets, `comments:${session.code}:${getClientIp(c)}`, Math.max(50, getBatchParseLimit(session) * 2), 24 * 60 * 60 * 1000);
+      const data = await fetchDouyinComments(targetAwemeId, { ...parserOptions, count, cursor });
+      await store.recordUsage({ kind: "comments_fetch", user_key: session.code, ip: getClientIp(c), path: "/api/v1/comments", status: 200, detail: JSON.stringify({ aweme_id: targetAwemeId, count: data.comments.length }) });
+      return c.json(success({ ...data, input_url: inputUrl ?? null }));
     } catch (error) {
+      await store.recordUsage({ kind: "comments_fetch", user_key: "unknown", ip: getClientIp(c), path: "/api/v1/comments", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
@@ -573,6 +579,42 @@ export function createApp(options: CreateAppOptions = {}) {
       requireAdmin(c, adminSessions);
       return c.json(success({ ...(await (await creatorStorePromise).getMetrics()), online: onlineStats() }));
     } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/batch/:id/comments/collect", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      const session = await requireVip(c, await getStore());
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment collection", 403);
+      }
+      const task = await getBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      const body = await readJsonBody(c);
+      const countPerVideo = Math.min(parsePositiveInt(body.count_per_video ?? body.count, 20), 100);
+      const requestedIds = readAwemeIdSet(body.aweme_ids);
+      const maxItems = Math.min(parsePositiveInt(body.video_count, task.items.length), task.items.length, getBatchParseLimit(session));
+      const items = task.items.filter((item) => requestedIds.size === 0 || requestedIds.has(item.aweme_id)).slice(0, maxItems);
+      enforceRateLimit(rateBuckets, `batch-comments:${session.code}:${getClientIp(c)}`, Math.max(20, getBatchParseLimit(session)), 24 * 60 * 60 * 1000, Math.max(1, items.length));
+      let collectedCount = 0;
+      const results = [];
+      for (const item of items) {
+        try {
+          const fetched = await fetchDouyinComments(item.aweme_id, { ...parserOptions, count: countPerVideo });
+          item.comments = mergeComments(item.comments, fetched.comments);
+          collectedCount += fetched.comments.length;
+          results.push({ aweme_id: item.aweme_id, title: item.title, collected_count: fetched.comments.length, total_comments: item.comments.length, next_cursor: fetched.next_cursor, has_more: fetched.has_more, error: null });
+        } catch (error) {
+          results.push({ aweme_id: item.aweme_id, title: item.title, collected_count: 0, total_comments: item.comments.length, next_cursor: null, has_more: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      await saveBatchTask(task);
+      await store.recordUsage({ kind: "batch_comments_collect", user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/comments/collect`, status: 200, detail: JSON.stringify({ video_count: items.length, collected_count: collectedCount }) });
+      return c.json(success({ task_id: task.id, video_count: items.length, collected_count: collectedCount, items: results }));
+    } catch (error) {
+      await store.recordUsage({ kind: "batch_comments_collect", user_key: "unknown", ip: getClientIp(c), path: `/api/v1/batch/${c.req.param("id")}/comments/collect`, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
@@ -832,6 +874,21 @@ function normalizeCommentInput(value: unknown): BatchComment | null {
     digg_count: typeof record.digg_count === "number" && Number.isFinite(record.digg_count) ? record.digg_count : null,
     create_time: asString(record.create_time),
   };
+}
+
+function readAwemeIdSet(value: unknown): Set<string> {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  return new Set(
+    values
+      .map((item) => (typeof item === "string" || typeof item === "number" ? String(item).trim() : ""))
+      .filter((item) => /^\d{10,}$/.test(item)),
+  );
+}
+
+function mergeComments(existing: BatchComment[], incoming: BatchComment[]): BatchComment[] {
+  const merged = new Map(existing.map((comment) => [comment.cid, comment]));
+  for (const comment of incoming) merged.set(comment.cid, comment);
+  return [...merged.values()];
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {

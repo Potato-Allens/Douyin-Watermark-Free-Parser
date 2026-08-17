@@ -19,6 +19,9 @@ describe("api routes", () => {
     expect(html).toContain('id="queuePosition"');
     expect(html).toContain('id="queuePriority"');
     expect(html).toContain('id="centerDownloadBtn"');
+    expect(html).toContain('id="commentsBtn"');
+    expect(html).toContain('id="commentsList"');
+    expect(html).toContain('id="collectBatchCommentsBtn"');
     expect(html).toContain('id="collectMini"');
     expect(html).toContain('profilePreviewBtn:$("inspectBtn")');
     expect(html).not.toContain('profilePreviewBtn:$("profilePreviewBtn")');
@@ -251,6 +254,75 @@ describe("api routes", () => {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;
     }
+  });
+
+  it("fetches video comments and collects them into a batch task export", async () => {
+    const store = await createMemoryVipStore(["COMMENT-1"]);
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/aweme/v1/web/comment/list/")) {
+        return new Response(
+          JSON.stringify({
+            status_code: 0,
+            cursor: 20,
+            has_more: 0,
+            total: 1,
+            comments: [{ cid: "comment-1", text: "这个视频很有用", digg_count: 8, create_time: 1700000000, user: { nickname: "观众A" } }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.includes("/aweme/v1/web/aweme/post/")) {
+        return new Response(JSON.stringify({ total: 1, aweme_list: [{ aweme_id: "7673000000000000001" }] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/user/")) {
+        return new Response(`<html>{"sec_uid":"SEC_COMMENT","aweme_id":"7673000000000000001"}</html>`, {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response(VIDEO_HTML, { headers: { "content-type": "text/html" } });
+    };
+    const app = createApp({ fetcher, vipStore: store, cacheTtlMs: 0 });
+    const register = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ code: "COMMENT-1", username: "comment_user", password: "password123" }),
+    });
+    const token = (await register.json()).data.token;
+    const headers = { authorization: `Bearer ${token}` };
+
+    const comments = await app.request("/api/v1/comments?aweme_id=7673000000000000001&count=10", { headers });
+    const commentsBody = await comments.json();
+    expect(comments.status).toBe(200);
+    expect(commentsBody.data.comments[0]).toMatchObject({ cid: "comment-1", nickname: "观众A", text: "这个视频很有用", digg_count: 8 });
+    expect(commentsBody.data.next_cursor).toBeNull();
+
+    const started = await app.request("/api/v1/batch/start", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_COMMENT", count: 1, concurrency: 1 }),
+    });
+    const taskId = (await started.json()).data.id;
+    for (let index = 0; index < 20; index += 1) {
+      const task = await app.request(`/api/v1/batch/${taskId}`, { headers });
+      const taskBody = await task.json();
+      if (taskBody.data.status === "completed" || taskBody.data.status === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const collected = await app.request(`/api/v1/batch/${taskId}/comments/collect`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ count_per_video: 10 }),
+    });
+    const collectedBody = await collected.json();
+    expect(collected.status).toBe(200);
+    expect(collectedBody.data.collected_count).toBe(1);
+
+    const exported = await app.request(`/api/v1/batch/${taskId}/export?type=comments`, { headers });
+    const exportedBody = await exported.json();
+    expect(exportedBody.comments[0].comments[0].text).toBe("这个视频很有用");
   });
 
   it("generates batch AI scripts and exports JSON/text artifacts", async () => {
