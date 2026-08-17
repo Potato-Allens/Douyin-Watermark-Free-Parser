@@ -1040,6 +1040,17 @@ describe("api routes", () => {
     expect(postCursors).toEqual(["0", "20"]);
 
     postCursors.length = 0;
+    const profileInspect = await app.request("/api/v1/profile/inspect", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_PAGE", count: 25 }),
+    });
+    const profileInspectBody = await profileInspect.json();
+    expect(profileInspect.status).toBe(200);
+    expect(profileInspectBody.data.available_count).toBe(25);
+    expect(postCursors).toEqual(["0", "20"]);
+
+    postCursors.length = 0;
     const started = await app.request("/api/v1/batch/start", {
       method: "POST",
       headers,
@@ -1304,6 +1315,13 @@ describe("api routes", () => {
     expect(preview.status).toBe(200);
     expect(previewBody.data.preview_count).toBe(1);
     expect(previewBody.data.items[0].download_url).toContain("/api/v1/download");
+
+    const videos = await app.request("/api/v1/profile/SEC_PREVIEW/videos?count=1", { headers });
+    const videosBody = await videos.json();
+    expect(videos.status).toBe(200);
+    expect(videosBody.data.profile_id).toBe("SEC_PREVIEW");
+    expect(videosBody.data.preview_count).toBe(1);
+    expect(videosBody.data.items[0].download_url).toContain("/api/v1/download");
 
     const queue = await app.request("/api/v1/batch/queue/status", { headers });
     const queueBody = await queue.json();

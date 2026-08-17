@@ -313,6 +313,33 @@ export function createApp(options: CreateAppOptions = {}) {
     return parsed;
   };
 
+  const buildProfilePreview = async (homepageUrl: string, previewLimit: number, publicRequestUrl: string) => {
+    const inspect = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems: previewLimit });
+    const ids = inspect.aweme_ids.slice(0, previewLimit);
+    const items: Array<Record<string, unknown>> = [];
+    for (const awemeId of ids) {
+      try {
+        const parsed = decorateParsedInfo(await parseForRequest(`https://www.douyin.com/video/${awemeId}`), publicRequestUrl);
+        items.push(profilePreviewItem(awemeId, parsed));
+      } catch (error) {
+        items.push({
+          aweme_id: awemeId,
+          status: "failed",
+          page_url: `https://www.douyin.com/video/${awemeId}`,
+          title: null,
+          author_nickname: null,
+          cover_url: null,
+          video_url: null,
+          download_url: null,
+          music_title: null,
+          stats: { comment_count: null, digg_count: null, share_count: null, collect_count: null },
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { ...inspect, preview_count: items.length, items };
+  };
+
   const getStore = () => vipStorePromise ?? getVipStore();
 
   app.get("/", async (c) => {
@@ -546,6 +573,46 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.post("/api/v1/profile/inspect", async (c) => {
+    let sessionKey = "unknown";
+    try {
+      await guardPublicAccess(c, "profile_inspect");
+      const session = await requireVip(c, await getStore(), { mutation: true });
+      sessionKey = session.code;
+      const body = await readJsonBody(c);
+      const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
+      if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
+      const maxItems = Math.min(parsePositiveInt(body.count ?? body.max_items, getBatchParseLimit(session)), getBatchParseLimit(session));
+      await enforceMemberRateLimit("profile_inspect", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      const data = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems });
+      await recordUsage({ kind: "profile_inspect", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/inspect", status: 200, detail: JSON.stringify({ requested_count: maxItems, available_count: data.available_count, total_count: data.total_count }) });
+      return c.json(success(data));
+    } catch (error) {
+      await recordUsage({ kind: "profile_inspect", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/inspect", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/v1/profile/:id/videos", async (c) => {
+    let sessionKey = "unknown";
+    const profileId = c.req.param("id");
+    try {
+      await guardPublicAccess(c, "profile_videos");
+      const session = await requireVip(c, await getStore());
+      sessionKey = session.code;
+      const requestUrl = new URL(c.req.url);
+      const homepageUrl = requestUrl.searchParams.get("url") || `https://www.douyin.com/user/${encodeURIComponent(profileId)}`;
+      const previewLimit = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 12), getBatchParseLimit(session), 100);
+      await enforceMemberRateLimit("profile_videos", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      const data = await buildProfilePreview(homepageUrl, previewLimit, getPublicRequestUrl(c));
+      await recordUsage({ kind: "profile_videos", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/:id/videos", status: 200, detail: JSON.stringify({ profile_id: profileId, preview_count: data.preview_count, total_count: data.total_count }) });
+      return c.json(success({ profile_id: profileId, ...data }));
+    } catch (error) {
+      await recordUsage({ kind: "profile_videos", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/:id/videos", status: error instanceof DouyinServiceError ? error.status : 500, detail: JSON.stringify({ profile_id: profileId, error: error instanceof Error ? error.message : String(error) }) });
+      return jsonError(c, error);
+    }
+  });
+
   app.post("/api/v1/profile/preview", async (c) => {
     let sessionKey = "unknown";
     try {
@@ -557,32 +624,9 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
       const previewLimit = Math.min(parsePositiveInt(body.count, 8), getBatchParseLimit(session), 24);
       await enforceMemberRateLimit("profile_preview", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
-      const inspect = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems: previewLimit });
-      const ids = inspect.aweme_ids.slice(0, previewLimit);
-      const publicRequestUrl = getPublicRequestUrl(c);
-      const items = [];
-      for (const awemeId of ids) {
-        try {
-          const parsed = decorateParsedInfo(await parseForRequest(`https://www.douyin.com/video/${awemeId}`), publicRequestUrl);
-          items.push(profilePreviewItem(awemeId, parsed));
-        } catch (error) {
-          items.push({
-            aweme_id: awemeId,
-            status: "failed",
-            page_url: `https://www.douyin.com/video/${awemeId}`,
-            title: null,
-            author_nickname: null,
-            cover_url: null,
-            video_url: null,
-            download_url: null,
-            music_title: null,
-            stats: { comment_count: null, digg_count: null, share_count: null, collect_count: null },
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      await recordUsage({ kind: "profile_preview", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/preview", status: 200, detail: JSON.stringify({ preview_count: items.length, total_count: inspect.total_count }) });
-      return c.json(success({ ...inspect, preview_count: items.length, items }));
+      const data = await buildProfilePreview(homepageUrl, previewLimit, getPublicRequestUrl(c));
+      await recordUsage({ kind: "profile_preview", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/preview", status: 200, detail: JSON.stringify({ preview_count: data.preview_count, total_count: data.total_count }) });
+      return c.json(success(data));
     } catch (error) {
       await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);

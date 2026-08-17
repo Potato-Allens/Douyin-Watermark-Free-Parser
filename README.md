@@ -126,6 +126,8 @@ POST /api/v1/auth/login
 POST /api/v1/auth/logout
 GET  /api/v1/me
 POST /api/v1/batch/inspect
+POST /api/v1/profile/inspect
+GET  /api/v1/profile/:id/videos?count=12
 POST /api/v1/profile/preview
 POST /api/v1/batch/start
 GET  /api/v1/batch/tasks

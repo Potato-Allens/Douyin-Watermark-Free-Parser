@@ -1,6 +1,6 @@
 ﻿const SITE_TITLE = "抖音视频解析";
 const PRODUCT_NAME = "抖映灵感台";
-const SITE_SUBTITLE = "方案 A：抖音沉浸预览版。复制链接后视频居中放大，左右轻操作，批量结果沉到底部";
+const SITE_SUBTITLE = "复制抖音链接，自动识别并居中预览；作品数据、AI 文案和批量采集都围绕当前视频展开";
 
 export function renderHomePage(): string {
   return String.raw`<!doctype html>
