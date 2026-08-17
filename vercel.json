@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "devCommand": "pnpm start",
+  "rewrites": [
+    { "source": "/api/hello", "destination": "/api/hello" },
+    { "source": "/api/v1/parse", "destination": "/api/v1/parse" },
+    { "source": "/(.*)", "destination": "/api/hello" }
+  ]
+}

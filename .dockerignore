@@ -1,0 +1,10 @@
+node_modules/
+.git/
+.wrangler/
+.vercel/
+coverage/
+dist/
+.env
+.env.*
+.DS_Store
+.pnpm-store/

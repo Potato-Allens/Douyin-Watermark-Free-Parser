@@ -1,0 +1,49 @@
+{
+  "name": "douyin-watermark-free-parser",
+  "version": "0.1.0",
+  "description": "抖音视频/图文无水印解析服务，支持 API 与 SDK，多运行时部署。",
+  "type": "module",
+  "private": true,
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./app": "./src/app.ts",
+    "./core": "./src/core/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/node.ts",
+    "start": "tsx src/node.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsx scripts/build-vercel.ts && pnpm typecheck",
+    "test": "vitest run",
+    "verify": "tsx scripts/verify.ts",
+    "smoke": "tsx scripts/real-smoke.ts",
+    "smoke:node": "tsx scripts/node-smoke.ts",
+    "smoke:real": "tsx scripts/real-smoke.ts",
+    "smoke:image-real": "tsx scripts/image-real-smoke.ts",
+    "smoke:server-real": "tsx scripts/server-real-smoke.ts",
+    "smoke:deno-real": "tsx scripts/deno-real-smoke.ts",
+    "smoke:vercel-dev": "tsx scripts/vercel-dev-smoke.ts",
+    "smoke:vercel-remote": "tsx scripts/vercel-remote-smoke.ts",
+    "verify:docker": "tsx scripts/docker-smoke.ts",
+    "verify:vercel": "npx vercel build --yes",
+    "verify:vercel-dev": "tsx scripts/vercel-dev-smoke.ts",
+    "verify:vercel-remote": "tsx scripts/vercel-remote-smoke.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.4",
+    "hono": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.62.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "packageManager": "pnpm@11.17.0"
+}

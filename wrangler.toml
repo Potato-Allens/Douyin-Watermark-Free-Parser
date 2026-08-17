@@ -1,0 +1,4 @@
+name = "douyin-watermark-free-parser"
+main = "src/worker.ts"
+compatibility_date = "2026-08-17"
+workers_dev = true
