@@ -366,3 +366,50 @@ Result:
 }
 ```
 Exit status 0.
+
+## Production Deployment - 2026-08-17 21:56 Asia/Shanghai
+
+Commit deployed: `ecabb102f848364949136a2634749f2d36da3339`
+Domain: `https://dy.devforai.cn`
+Server app dir: `/www/wwwroot/dy.devforai.cn`
+Service: `douyin-parser`
+
+Deployment evidence:
+- Uploaded archive bytes: `85788`
+- Uploaded archive SHA256: `9d144ca7dae124b0ea09ad677e7e1aa12084c4127fad43d2a2b90e57a7761a7b`
+- Server decode result: `85788 /tmp/douyin-parser-main.tar.gz`
+- Server SHA256 result: `9d144ca7dae124b0ea09ad677e7e1aa12084c4127fad43d2a2b90e57a7761a7b /tmp/douyin-parser-main.tar.gz`
+- Deploy result: `DEPLOY_OK dy.devforai.cn port=8000 app=/www/wwwroot/dy.devforai.cn log=/root/douyin-parser-deploy.log`
+- systemd result: `douyin-parser.service active (running)`
+
+Production verification commands/results:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://dy.devforai.cn/healthz
+```
+Result: HTTP 200, body `{"ok":true,"code":"OK","message":"healthy"}`, exit status 0.
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://dy.devforai.cn/?v=<random>
+```
+Result: HTTP 200, page contains `抖映灵感台`, `视频在中心`, `激活并创建账号`, exit status 0.
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://dy.devforai.cn/admin?v=<random>
+```
+Result: HTTP 200, page contains `解析中控台`, no `????` garbled marker, exit status 0.
+
+```powershell
+GET https://dy.devforai.cn/api/v1/plans
+GET https://dy.devforai.cn/api/v1/me
+GET https://dy.devforai.cn/api/admin/settings/llm Authorization: Bearer <admin-token>
+GET https://dy.devforai.cn/api/admin/metrics Authorization: Bearer <admin-token>
+```
+Result: all HTTP 200; `/api/v1/me` guest permissions returned; admin LLM base_url is `https://token-plan-cn.xiaomimimo.com/v1`; metrics returned online state, exit status 0.
+
+```powershell
+POST https://dy.devforai.cn/api/admin/codes Authorization: Bearer <admin-token>
+POST https://dy.devforai.cn/api/v1/auth/register
+GET https://dy.devforai.cn/api/v1/me Authorization: Bearer <member-token>
+```
+Result: admin code creation HTTP 200; registration HTTP 200; `/api/v1/me` returned `session_type: member`, plan `standard`, exit status 0.
