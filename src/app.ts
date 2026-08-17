@@ -4,6 +4,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
   DouyinServiceError,
   generateAiCopy,
+  getBatchQueueSnapshot,
   getBatchTask,
   getCreatorStore,
   getVipStore,
@@ -16,7 +17,7 @@ import {
   testLlmSettings,
   toServiceError,
 } from "./core/index.ts";
-import type { ApiSuccessResponse, BatchItem, BatchTask, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, VipSession, VipStore } from "./core/index.ts";
+import type { ApiSuccessResponse, BatchComment, BatchItem, BatchTask, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, VipSession, VipStore } from "./core/index.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import { renderHomePage } from "./ui.ts";
 
@@ -266,6 +267,43 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.post("/api/v1/profile/preview", async (c) => {
+    try {
+      const session = await requireVip(c, await getStore());
+      const body = await readJsonBody(c);
+      const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
+      if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
+      const previewLimit = Math.min(parsePositiveInt(body.count, 8), getBatchParseLimit(session), 24);
+      const inspect = await inspectBatchHomepage(homepageUrl, parserOptions);
+      const ids = inspect.aweme_ids.slice(0, previewLimit);
+      const publicRequestUrl = getPublicRequestUrl(c);
+      const items = [];
+      for (const awemeId of ids) {
+        try {
+          const parsed = decorateParsedInfo(await parseForRequest(`https://www.douyin.com/video/${awemeId}`), publicRequestUrl);
+          items.push(profilePreviewItem(awemeId, parsed));
+        } catch (error) {
+          items.push({
+            aweme_id: awemeId,
+            status: "failed",
+            page_url: `https://www.douyin.com/video/${awemeId}`,
+            title: null,
+            author_nickname: null,
+            cover_url: null,
+            video_url: null,
+            download_url: null,
+            music_title: null,
+            stats: { comment_count: null, digg_count: null, share_count: null, collect_count: null },
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return c.json(success({ ...inspect, preview_count: items.length, items }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.post("/api/v1/batch/start", async (c) => {
     try {
       const session = await requireVip(c, await getStore());
@@ -277,6 +315,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (count > maxCount) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${maxCount} works per batch`, 403);
       const concurrency = Math.min(parsePositiveInt(body.concurrency, 3), getConcurrencyLimit(session));
       const publicRequestUrl = getPublicRequestUrl(c);
+      const permissions = permissionsForSession(session);
       const task = await startBatchTask({
         homepageUrl,
         count,
@@ -284,6 +323,8 @@ export function createApp(options: CreateAppOptions = {}) {
         parseOptions: parserOptions,
         parseByAwemeId: async (awemeId) => parseForRequest(`https://www.douyin.com/video/${awemeId}`),
         makeDownloadUrl: (parsed) => decorateParsedInfo(parsed, publicRequestUrl).download.download_url,
+        ownerKey: session.code,
+        queuePriority: permissions.queue_priority,
       });
       return c.json(success(task));
     } catch (error) {
@@ -297,6 +338,15 @@ export function createApp(options: CreateAppOptions = {}) {
       const task = await getBatchTask(c.req.param("id"));
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       return c.json(success(task));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/v1/batch/queue/status", async (c) => {
+    try {
+      await requireVip(c, await getStore());
+      return c.json(success(await getBatchQueueSnapshot()));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -354,6 +404,51 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/v1/batch/:id/comments", async (c) => {
+    try {
+      const session = await requireVip(c, await getStore());
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
+      }
+      const requestUrl = new URL(c.req.url);
+      const awemeId = requestUrl.searchParams.get("aweme_id");
+      const task = await getBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
+      return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })) }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/batch/:id/comments/import", async (c) => {
+    try {
+      const session = await requireVip(c, await getStore());
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment import/export", 403);
+      }
+      const task = await getBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      const body = await readJsonBody(c);
+      const payloads = normalizeCommentImportPayload(body);
+      let imported = 0;
+      for (const payload of payloads) {
+        const item = task.items.find((entry) => entry.aweme_id === payload.aweme_id);
+        if (!item) continue;
+        const merged = new Map(item.comments.map((comment) => [comment.cid, comment]));
+        for (const comment of payload.comments) {
+          merged.set(comment.cid, comment);
+          imported += 1;
+        }
+        item.comments = [...merged.values()];
+      }
+      await saveBatchTask(task);
+      return c.json(success({ task_id: task.id, imported_count: imported, items: task.items.map((item) => ({ aweme_id: item.aweme_id, comment_count: item.comments.length })) }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.post("/api/v1/ai/script", async (c) => {
     const store = await creatorStorePromise;
     try {
@@ -385,6 +480,13 @@ export function createApp(options: CreateAppOptions = {}) {
       const requestUrl = new URL(c.req.url);
       const awemeId = requestUrl.searchParams.get("aweme_id");
       const inputUrl = requestUrl.searchParams.get("url");
+      const taskId = requestUrl.searchParams.get("task_id");
+      if (taskId) {
+        const task = await getBatchTask(taskId);
+        if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+        const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
+        return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })) }));
+      }
       return c.json(
         success({
           aweme_id: awemeId ?? null,
@@ -650,6 +752,58 @@ function parsedFromBatchItem(task: BatchTask, item: BatchItem): ParsedDouyinInfo
       image_url_list: [],
     },
   };
+}
+
+function profilePreviewItem(awemeId: string, parsed: ParsedDouyinInfo) {
+  return {
+    aweme_id: awemeId,
+    status: "success",
+    page_url: `https://www.douyin.com/video/${awemeId}`,
+    title: parsed.content.desc,
+    author_nickname: parsed.author.nickname,
+    cover_url: parsed.media.cover_url,
+    video_url: parsed.download.video_proxy_url ?? parsed.media.video_url,
+    download_url: parsed.download.download_url ?? parsed.media.video_url,
+    music_title: parsed.music.title,
+    stats: { ...parsed.stats },
+    error: null,
+  };
+}
+
+function normalizeCommentImportPayload(body: Record<string, unknown>): Array<{ aweme_id: string; comments: BatchComment[] }> {
+  const items = Array.isArray(body.items)
+    ? body.items
+    : asString(body.aweme_id)
+      ? [{ aweme_id: body.aweme_id, comments: body.comments }]
+      : [];
+  return items
+    .map((value) => {
+      if (!value || typeof value !== "object") return null;
+      const record = value as Record<string, unknown>;
+      const awemeId = asString(record.aweme_id);
+      if (!awemeId) return null;
+      const comments = Array.isArray(record.comments) ? record.comments.map(normalizeCommentInput).filter(isPresent) : [];
+      return { aweme_id: awemeId, comments };
+    })
+    .filter(isPresent);
+}
+
+function normalizeCommentInput(value: unknown): BatchComment | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const text = asString(record.text);
+  if (!text) return null;
+  return {
+    cid: asString(record.cid) ?? randomId(),
+    nickname: asString(record.nickname),
+    text,
+    digg_count: typeof record.digg_count === "number" && Number.isFinite(record.digg_count) ? record.digg_count : null,
+    create_time: asString(record.create_time),
+  };
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }
 
 function batchExportResponse(task: BatchTask, type: string): Response {

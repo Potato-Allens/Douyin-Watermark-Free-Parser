@@ -40,6 +40,16 @@
 - AI 文案接口已按会员套餐日额度限流：`POST /api/v1/ai/script`。
 - 批量解析按会员套餐限制单次数量和并发。
 
+## 1.3 本轮开发落地
+
+- 继续保持 **TypeScript + Hono + 原生前端 + SQLite/内存回退** 的轻量技术栈，不引入重型后台框架。
+- 前台交互围绕中间视频预览展开：主页作品卡片点击后直接加载到中心播放器，右侧承接作品信息、下载地址和 AI 口播文案。
+- 新增主页作品预览接口：`POST /api/v1/profile/preview`，返回作品 ID、封面、标题、播放预览地址、下载地址、点赞/评论/转发/收藏等字段。
+- 批量任务新增队列字段：`queue_priority`、`queue_position`、`owner_key`、`started_at`、`finished_at`，支持按会员套餐优先级排队。
+- 新增队列状态接口：`GET /api/v1/batch/queue/status`，后台/前台可查看当前运行任务数、排队任务数和资源上限。
+- 批量任务持久化继续保留，页面离开后可通过本地保存的任务 ID 恢复进度。
+- 新增评论数据导入/查看能力：`POST /api/v1/batch/:id/comments/import`、`GET /api/v1/batch/:id/comments`，评论导出统一走 `type=comments`。
+
 ## 2. 本次确认后的新增需求
 
 ### 2.1 前台 UI 调整

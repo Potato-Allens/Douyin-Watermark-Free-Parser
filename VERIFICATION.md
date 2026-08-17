@@ -480,3 +480,26 @@ POST https://dy.devforai.cn/api/v1/batch/not-found/ai
 GET  https://dy.devforai.cn/api/v1/batch/not-found/export?type=json
 ```
 Result: admin code creation and member registration succeeded; new batch AI route and export route returned controlled `404` for unknown task under a valid member token, proving the deployed routes are active, exit status 0.
+
+## 2026-08-17 22:15 +08:00 - Profile preview queue and centered workbench update
+
+Changed branch: main
+Changed files:
+- docs/short-video-creator-workbench-dev-plan.md
+- src/app.ts
+- src/core/batch.ts
+- src/ui.ts
+- tests/api.test.ts
+
+Local verification:
+- Command: pnpm test
+- Result: exit 0; 2 test files passed; 25 tests passed.
+- Command: pnpm build
+- Result: exit 0; tsx scripts/build-vercel.ts and tsc --noEmit passed.
+
+Functional coverage added:
+- POST /api/v1/profile/preview for member profile work previews.
+- GET /api/v1/batch/queue/status for active/queued task visibility.
+- queue_priority and queue_position persisted on batch tasks.
+- GET/POST batch comment import/read routes, covered by API tests.
+- UI keeps video preview as the center stage and lets profile work cards load into the center preview.

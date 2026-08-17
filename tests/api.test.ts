@@ -281,5 +281,58 @@ describe("api routes", () => {
     const scriptText = await scripts.text();
     expect(scripts.headers.get("content-type")).toContain("text/plain");
     expect(scriptText).toContain("aweme_id: 7673000000000000001");
+
+    const imported = await app.request(`/api/v1/batch/${taskId}/comments/import`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ aweme_id: "7673000000000000001", comments: [{ cid: "c1", nickname: "viewer", text: "nice video", digg_count: 9 }] }),
+    });
+    expect(imported.status).toBe(200);
+    expect((await imported.json()).data.imported_count).toBe(1);
+
+    const comments = await app.request(`/api/v1/batch/${taskId}/comments?aweme_id=7673000000000000001`, { headers });
+    const commentsBody = await comments.json();
+    expect(comments.status).toBe(200);
+    expect(commentsBody.data.items[0].comments[0].text).toBe("nice video");
+  });
+
+  it("previews profile works and returns queue status for member plans", async () => {
+    const store = await createMemoryVipStore(["PREVIEW-1"]);
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/aweme/v1/web/aweme/post/")) {
+        return new Response(JSON.stringify({ total: 2, aweme_list: [{ aweme_id: "7673000000000000001" }, { aweme_id: "7673000000000000002" }] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/user/")) {
+        return new Response(`<html>{"sec_uid":"SEC_PREVIEW","aweme_id":"7673000000000000001"}</html>`, {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response(VIDEO_HTML, { headers: { "content-type": "text/html" } });
+    };
+    const app = createApp({ fetcher, vipStore: store, cacheTtlMs: 0 });
+    const register = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ code: "PREVIEW-1", username: "preview_user", password: "password123" }),
+    });
+    const token = (await register.json()).data.token;
+    const headers = { authorization: `Bearer ${token}` };
+
+    const preview = await app.request("/api/v1/profile/preview", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_PREVIEW", count: 1 }),
+    });
+    const previewBody = await preview.json();
+    expect(preview.status).toBe(200);
+    expect(previewBody.data.preview_count).toBe(1);
+    expect(previewBody.data.items[0].download_url).toContain("/api/v1/download");
+
+    const queue = await app.request("/api/v1/batch/queue/status", { headers });
+    const queueBody = await queue.json();
+    expect(queue.status).toBe(200);
+    expect(queueBody.data.max_active_tasks).toBeGreaterThan(0);
   });
 });

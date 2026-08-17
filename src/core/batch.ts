@@ -38,12 +38,17 @@ export interface BatchComment {
 export interface BatchTask {
   id: string;
   homepage_url: string;
+  owner_key: string | null;
   requested_count: number;
   concurrency: number;
+  queue_priority: number;
+  queue_position: number;
   total_detected: number | null;
   status: BatchTaskStatus;
   created_at: string;
   updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
   completed_count: number;
   success_count: number;
   failed_count: number;
@@ -57,11 +62,36 @@ export interface BatchStartOptions {
   parseOptions?: ParseOptions;
   parseByAwemeId: (awemeId: string) => Promise<ParsedDouyinInfo>;
   makeDownloadUrl: (parsed: ParsedDouyinInfo) => string | null;
+  ownerKey?: string | null;
+  queuePriority?: number;
+  maxActiveTasks?: number;
+  maxGlobalConcurrency?: number;
+}
+
+export interface BatchQueueSnapshot {
+  active_tasks: number;
+  queued_tasks: number;
+  max_active_tasks: number;
+  max_global_concurrency: number;
+  tasks: Array<{
+    id: string;
+    status: BatchTaskStatus;
+    queue_priority: number;
+    queue_position: number;
+    owner_key: string | null;
+    requested_count: number;
+    completed_count: number;
+    created_at: string;
+    updated_at: string;
+  }>;
 }
 
 const tasks = new Map<string, BatchTask>();
+const executions = new Map<string, BatchStartOptions>();
 let tasksLoaded = false;
 let persistTail = Promise.resolve();
+let activeTaskCount = 0;
+let schedulerScheduled = false;
 
 export async function inspectBatchHomepage(homepageUrl: string, options: ParseOptions = {}): Promise<ProfileInspectResult> {
   return await inspectDouyinProfile(homepageUrl, options);
@@ -73,27 +103,35 @@ export async function startBatchTask(options: BatchStartOptions): Promise<BatchT
   if (inspect.aweme_ids.length === 0) {
     throw new DouyinServiceError("PARSE_FAILED", "profile works list did not expose video ids for batch parsing");
   }
-  const concurrency = clamp(Math.floor(options.concurrency || 3), 1, 5);
+  const maxGlobalConcurrency = getMaxGlobalConcurrency(options);
+  const concurrency = clamp(Math.floor(options.concurrency || 3), 1, Math.max(1, maxGlobalConcurrency));
   const requestedCount = clamp(Math.floor(options.count || 1), 1, inspect.aweme_ids.length);
   const selected = inspect.aweme_ids.slice(0, requestedCount);
   const now = new Date().toISOString();
   const task: BatchTask = {
     id: randomId(),
     homepage_url: options.homepageUrl,
+    owner_key: normalizeOwnerKey(options.ownerKey),
     requested_count: requestedCount,
     concurrency,
+    queue_priority: normalizePriority(options.queuePriority),
+    queue_position: 0,
     total_detected: inspect.total_count,
     status: "queued",
     created_at: now,
     updated_at: now,
+    started_at: null,
+    finished_at: null,
     completed_count: 0,
     success_count: 0,
     failed_count: 0,
     items: selected.map(createEmptyBatchItem),
   };
   tasks.set(task.id, task);
+  executions.set(task.id, options);
+  updateQueuePositions();
   await persistTasks();
-  void runTask(task, options);
+  scheduleQueue();
   return task;
 }
 
@@ -108,8 +146,98 @@ export async function saveBatchTask(task: BatchTask): Promise<void> {
   await persistTasks();
 }
 
+export async function getBatchQueueSnapshot(): Promise<BatchQueueSnapshot> {
+  await loadPersistedTasks();
+  updateQueuePositions();
+  return {
+    active_tasks: activeTaskCount,
+    queued_tasks: [...tasks.values()].filter((task) => task.status === "queued").length,
+    max_active_tasks: getMaxActiveTasks(),
+    max_global_concurrency: getMaxGlobalConcurrency(),
+    tasks: [...tasks.values()]
+      .filter((task) => task.status === "queued" || task.status === "running")
+      .sort(compareQueueTasks)
+      .map((task) => ({
+        id: task.id,
+        status: task.status,
+        queue_priority: task.queue_priority,
+        queue_position: task.queue_position,
+        owner_key: task.owner_key,
+        requested_count: task.requested_count,
+        completed_count: task.completed_count,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+      })),
+  };
+}
+
+function scheduleQueue(): void {
+  if (schedulerScheduled) return;
+  schedulerScheduled = true;
+  queueMicrotask(() => {
+    schedulerScheduled = false;
+    drainQueue();
+  });
+}
+
+function drainQueue(): void {
+  const maxActiveTasks = getMaxActiveTasks();
+  updateQueuePositions();
+  while (activeTaskCount < maxActiveTasks) {
+    const next = [...tasks.values()]
+      .filter((task) => task.status === "queued" && executions.has(task.id))
+      .sort(compareQueueTasks)[0];
+    if (!next) break;
+    const options = executions.get(next.id);
+    if (!options) break;
+    activeTaskCount += 1;
+    next.status = "running";
+    next.queue_position = 0;
+    next.started_at ??= new Date().toISOString();
+    touch(next);
+    void runTask(next, options)
+      .catch((error) => {
+        next.status = "failed";
+        next.items
+          .filter((item) => item.status === "pending" || item.status === "running")
+          .forEach((item) => {
+            item.status = "failed";
+            item.error = error instanceof Error ? error.message : String(error);
+          });
+        next.failed_count = next.items.filter((item) => item.status === "failed").length;
+        next.completed_count = next.items.filter((item) => item.status === "success" || item.status === "failed").length;
+        next.finished_at = new Date().toISOString();
+        touch(next);
+      })
+      .finally(() => {
+        executions.delete(next.id);
+        activeTaskCount = Math.max(0, activeTaskCount - 1);
+        updateQueuePositions();
+        schedulePersist();
+        scheduleQueue();
+      });
+  }
+}
+
+function updateQueuePositions(): void {
+  const queued = [...tasks.values()].filter((task) => task.status === "queued").sort(compareQueueTasks);
+  queued.forEach((task, index) => {
+    task.queue_position = index + 1;
+  });
+  for (const task of tasks.values()) {
+    if (task.status !== "queued") task.queue_position = 0;
+  }
+}
+
+function compareQueueTasks(a: BatchTask, b: BatchTask): number {
+  if (b.queue_priority !== a.queue_priority) return b.queue_priority - a.queue_priority;
+  return a.created_at.localeCompare(b.created_at);
+}
+
 async function runTask(task: BatchTask, options: BatchStartOptions): Promise<void> {
   task.status = "running";
+  task.queue_position = 0;
+  task.started_at ??= new Date().toISOString();
   touch(task);
   let cursor = 0;
   const workers = Array.from({ length: task.concurrency }, async () => {
@@ -145,6 +273,7 @@ async function runTask(task: BatchTask, options: BatchStartOptions): Promise<voi
   });
   await Promise.all(workers);
   task.status = task.failed_count === task.items.length ? "failed" : "completed";
+  task.finished_at = new Date().toISOString();
   touch(task);
 }
 
@@ -219,12 +348,17 @@ function normalizeTask(value: unknown): BatchTask | null {
   return {
     id,
     homepage_url: String(record.homepage_url ?? ""),
+    owner_key: nullableString(record.owner_key),
     requested_count: Number(record.requested_count ?? items.length),
     concurrency: Number(record.concurrency ?? 1),
+    queue_priority: nullableNumber(record.queue_priority) ?? 0,
+    queue_position: 0,
     total_detected: record.total_detected === null || record.total_detected === undefined ? null : Number(record.total_detected),
     status,
     created_at: typeof record.created_at === "string" ? record.created_at : new Date().toISOString(),
     updated_at: typeof record.updated_at === "string" ? record.updated_at : new Date().toISOString(),
+    started_at: nullableString(record.started_at),
+    finished_at: nullableString(record.finished_at) ?? (status === "completed" || status === "failed" ? (typeof record.updated_at === "string" ? record.updated_at : new Date().toISOString()) : null),
     completed_count: completedCount,
     success_count: successCount,
     failed_count: failedCount,
@@ -287,6 +421,28 @@ function isPresent<T>(value: T | null | undefined): value is T {
 
 function getPersistFilePath(): string {
   return getEnv().BATCH_STORE_FILE ?? ".data/batch-tasks.json";
+}
+
+function getMaxActiveTasks(): number {
+  return clamp(readEnvInt("BATCH_MAX_ACTIVE_TASKS", 2), 1, 20);
+}
+
+function getMaxGlobalConcurrency(options?: BatchStartOptions): number {
+  return clamp(Math.floor(options?.maxGlobalConcurrency ?? readEnvInt("BATCH_MAX_GLOBAL_CONCURRENCY", 4)), 1, 20);
+}
+
+function readEnvInt(key: string, fallback: number): number {
+  const value = Number.parseInt(getEnv()[key] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function normalizeOwnerKey(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 80) : null;
+}
+
+function normalizePriority(value: unknown): number {
+  const priority = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 0;
+  return Number.isFinite(priority) ? clamp(Math.floor(priority), 0, 1000) : 0;
 }
 
 function getEnv(): Record<string, string | undefined> {
