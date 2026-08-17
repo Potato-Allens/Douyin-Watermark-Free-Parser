@@ -84,7 +84,62 @@ describe("api routes", () => {
     expect(html).toContain('id="planBatchAi"');
     expect(html).toContain('id="planCommentExport"');
     expect(html).toContain('id="planCoverDownload"');
+    expect(html).toContain('id="llmTimeout"');
+    expect(html).toContain('id="llmMaxTokens"');
+    expect(html).toContain('id="llmTemperature"');
     expect(html).not.toContain("???");
+  });
+
+  it("lets admin save advanced Xiaomi/OpenAI-compatible model settings", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = "llm-admin-token";
+    try {
+      const creatorStore = createMemoryCreatorStore();
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore });
+      const adminHeaders = { authorization: "Bearer llm-admin-token", "content-type": "application/json" };
+
+      const saved = await app.request("/api/admin/settings/llm", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({
+          base_url: "https://token-plan-cn.xiaomimimo.com/v1/",
+          model: "xiaomi-test",
+          api_key: "sk-test-123456",
+          enabled: true,
+          timeout_ms: 45_000,
+          max_tokens: 1_200,
+          temperature: 0.35,
+        }),
+      });
+      const savedBody = await saved.json();
+
+      expect(saved.status).toBe(200);
+      expect(savedBody.data).toMatchObject({
+        base_url: "https://token-plan-cn.xiaomimimo.com/v1",
+        model: "xiaomi-test",
+        enabled: true,
+        timeout_ms: 45_000,
+        max_tokens: 1_200,
+        temperature: 0.35,
+      });
+      expect(savedBody.data.api_key_masked).toBeTruthy();
+      expect(JSON.stringify(savedBody.data)).not.toContain("sk-test-123456");
+
+      const loaded = await app.request("/api/admin/settings/llm", { headers: { authorization: "Bearer llm-admin-token" } });
+      const loadedBody = await loaded.json();
+      expect(loaded.status).toBe(200);
+      expect(loadedBody.data.timeout_ms).toBe(45_000);
+      expect(loadedBody.data.max_tokens).toBe(1_200);
+      expect(loadedBody.data.temperature).toBe(0.35);
+
+      const audit = await app.request("/api/admin/audit-logs?limit=5", { headers: { authorization: "Bearer llm-admin-token" } });
+      const auditBody = await audit.json();
+      expect(auditBody.data.some((entry: any) => entry.action === "llm_settings_save")).toBe(true);
+      expect(auditBody.data.some((entry: any) => entry.detail.includes('"max_tokens":1200'))).toBe(true);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+    }
   });
 
   it("returns plain text no-watermark url on compatibility endpoint", async () => {

@@ -784,7 +784,19 @@ export function createApp(options: CreateAppOptions = {}) {
       requireAdmin(c, adminSessions);
       const body = await readJsonBody(c);
       const data = await store.saveLlmSettings(body);
-      await store.recordAudit({ actor: "admin", action: "llm_settings_save", ip: getClientIp(c), detail: JSON.stringify({ base_url: data.base_url, model: data.model, enabled: data.enabled }) });
+      await store.recordAudit({
+        actor: "admin",
+        action: "llm_settings_save",
+        ip: getClientIp(c),
+        detail: JSON.stringify({
+          base_url: data.base_url,
+          model: data.model,
+          enabled: data.enabled,
+          timeout_ms: data.timeout_ms,
+          max_tokens: data.max_tokens,
+          temperature: data.temperature,
+        }),
+      });
       return c.json(success(data));
     } catch (error) {
       return jsonError(c, error);

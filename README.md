@@ -14,7 +14,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Profile works preview, member-isolated batch task history, persistent queue progress, and JSON/CSV/text/cover ZIP/comment export.
 - Single and batch comments collection/import/export.
 - Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
-- Admin console `/admin` with password + optional Google Authenticator/TOTP, model config, plan config, activation codes, metrics, usage logs, and audit logs.
+- Admin console `/admin` with password + optional Google Authenticator/TOTP, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
 - Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
 - Rate-limit interceptions are recorded in usage logs and audit logs as `rate_limit_block`.
 - Admin security policies: IP blacklist, optional Origin/Referer allowlist, browser-header checks, and blocked-request audit logs.
