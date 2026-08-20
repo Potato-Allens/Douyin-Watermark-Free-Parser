@@ -26,9 +26,14 @@ export async function fetchDouyinComments(awemeId: string, options: DouyinCommen
   const count = clamp(Math.floor(options.count ?? 20), 1, 100);
   try {
     return await fetchDouyinCommentsViaHttp(normalizedAwemeId, cursor, count, options);
-  } catch (error) {
-    if (!shouldUseBrowserFallback(options, error)) throw error;
-    return await fetchDouyinCommentsViaBrowser(normalizedAwemeId, cursor, count, options);
+  } catch (primaryError) {
+    if (options.fetcher) throw primaryError;
+    try {
+      return await fetchDouyinCommentsViaHttp(normalizedAwemeId, cursor, count, options, buildLegacyCommentListUrl(normalizedAwemeId, cursor, count));
+    } catch (legacyError) {
+      if (!shouldUseBrowserFallback(options, legacyError)) throw legacyError;
+      return await fetchDouyinCommentsViaBrowser(normalizedAwemeId, cursor, count, options);
+    }
   }
 }
 
@@ -37,8 +42,9 @@ async function fetchDouyinCommentsViaHttp(
   cursor: number,
   count: number,
   options: DouyinCommentFetchOptions,
+  endpointOverride?: string,
 ): Promise<DouyinCommentFetchResult> {
-  const endpoint = buildCommentListUrl(normalizedAwemeId, cursor, count);
+  const endpoint = endpointOverride ?? buildCommentListUrl(normalizedAwemeId, cursor, count);
   const fetcher: FetchLike = options.fetcher ?? globalThis.fetch;
   if (!fetcher) throw new DouyinServiceError("FETCH_FAILED", "fetch is not available");
 
@@ -73,7 +79,7 @@ async function fetchDouyinCommentsViaHttp(
       throw new DouyinServiceError("FETCH_FAILED", `${statusCode}: ${statusMsg}`);
     }
 
-    const comments = uniqueComments(readArray(data, ["comments"]).map(normalizeComment).filter(isPresent));
+    const comments = uniqueComments(readArray(data, ["comments"]).map(normalizeComment).filter(isPresent)).slice(0, count);
     const hasMore = Boolean(readBoolean(data, ["has_more"]) ?? readNumber(data, ["has_more"]));
     const returnedCursor = readNumber(data, ["cursor"]) ?? cursor + comments.length;
     return {
@@ -194,7 +200,7 @@ async function fetchDouyinCommentsViaBrowser(
     const detail = error instanceof Error ? error.message : String(error);
     throw new DouyinServiceError("FETCH_FAILED", `browser comment collector failed: ${detail}`);
   } finally {
-    await browser?.close?.().catch?.(() => undefined);
+    if (browser) await Promise.race([browser.close().catch(() => undefined), sleep(2_500)]);
   }
 }
 
@@ -226,6 +232,14 @@ function buildCommentListUrl(awemeId: string, cursor: number, count: number): st
   endpoint.searchParams.set("engine_version", "130.0.0.0");
   endpoint.searchParams.set("os_name", "Windows");
   endpoint.searchParams.set("os_version", "10");
+  return endpoint.toString();
+}
+
+function buildLegacyCommentListUrl(awemeId: string, cursor: number, count: number): string {
+  const endpoint = new URL("https://www.iesdouyin.com/web/api/v2/comment/list/");
+  endpoint.searchParams.set("aweme_id", awemeId);
+  endpoint.searchParams.set("cursor", String(cursor));
+  endpoint.searchParams.set("count", String(count));
   return endpoint.toString();
 }
 
@@ -277,13 +291,22 @@ function readCursorFromUrl(url: string): number | null {
 async function scrollCommentSurface(page: any): Promise<void> {
   await page.mouse.wheel(0, 1_400).catch(() => undefined);
   await page.keyboard.press("PageDown").catch(() => undefined);
-  await page.evaluate(() => {
-    const scrollables = [...document.querySelectorAll<HTMLElement>("div,section,main")].filter((node) => {
-      const style = window.getComputedStyle(node);
-      return /(auto|scroll)/.test(`${style.overflow}${style.overflowY}`) && node.scrollHeight > node.clientHeight + 80;
-    });
-    for (const node of scrollables.slice(0, 8)) node.scrollTop = node.scrollHeight;
-  }).catch(() => undefined);
+  await Promise.race([
+    page
+      .evaluate(() => {
+        const scrollables = [...document.querySelectorAll<HTMLElement>("div,section,main")].filter((node) => {
+          const style = window.getComputedStyle(node);
+          return /(auto|scroll)/.test(`${style.overflow}${style.overflowY}`) && node.scrollHeight > node.clientHeight + 80;
+        });
+        for (const node of scrollables.slice(0, 8)) node.scrollTop = node.scrollHeight;
+      })
+      .catch(() => undefined),
+    sleep(1_500),
+  ]);
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function normalizeAwemeId(value: string): string {
