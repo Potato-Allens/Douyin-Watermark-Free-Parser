@@ -214,22 +214,37 @@ async function fetchProfilePostListViaBrowser(
     browser = await mod.chromium.launch({
       executablePath,
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-background-networking",
+        "--disable-extensions",
+      ],
     });
     const context = await browser.newContext({
       userAgent: options.userAgent ?? DESKTOP_USER_AGENT,
       locale: "zh-CN",
       viewport: { width: 1365, height: 900 },
+      serviceWorkers: "block",
     });
     await applyConfiguredProfileCookies(context);
+    await context.route("**/*", (route: any) => {
+      const type = route.request().resourceType();
+      return type === "image" || type === "media" || type === "font" ? route.abort() : route.continue();
+    });
     const page = await context.newPage();
+    const cdp = await context.newCDPSession(page);
 
     page.on("response", (response: any) => {
       const url = response.url();
       if (!url.includes("/aweme/v1/web/aweme/post/") && !url.includes("/aweme/v1/web/user/profile/other/")) return;
       const task = (async () => {
         try {
-          const text = await response.text();
+          const text = await Promise.race([response.text(), sleep(5_000).then(() => "")]);
           if (!text.trim()) return;
           const data = JSON.parse(text) as unknown;
           if ((readNumber(data, ["status_code"]) ?? 0) !== 0) return;
@@ -254,7 +269,7 @@ async function fetchProfilePostListViaBrowser(
     });
 
     await page.goto(`https://www.douyin.com/user/${encodeURIComponent(secUserId)}`, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "commit",
       timeout: timeoutMs,
     });
 
@@ -264,15 +279,18 @@ async function fetchProfilePostListViaBrowser(
       if (ids.size >= maxItems) break;
       if (postResponseSeen && !postHasMore) break;
       if (postResponseSeen && Date.now() - lastProgressAt > 8_000) break;
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)).catch(() => undefined);
-      await page.mouse.wheel(0, 2_400).catch(() => undefined);
+      if (postResponseSeen) {
+        await cdp
+          .send("Input.dispatchMouseEvent", { type: "mouseWheel", x: 680, y: 760, deltaX: 0, deltaY: 2_400 })
+          .catch(() => undefined);
+      }
     }
-    if (pending.size > 0) await Promise.allSettled([...pending]);
+    if (pending.size > 0) await Promise.race([Promise.allSettled([...pending]), sleep(9_000)]);
 
     const allIds = [...ids.keys()];
     const awemeIds = allIds.slice(0, maxItems);
-    if (awemeIds.length === 0 && totalCount === null) {
-      throw new DouyinServiceError("FETCH_FAILED", "browser profile collector did not receive works metadata");
+    if (!postResponseSeen) {
+      throw new DouyinServiceError("FETCH_FAILED", "browser profile collector did not receive the signed works response");
     }
     const hasMore = postHasMore || allIds.length > awemeIds.length || (awemeIds.length >= maxItems && totalCount !== null && awemeIds.length < totalCount);
     return { awemeIds, totalCount, hasMore };
