@@ -12,7 +12,7 @@
 - 单条视频解析、预览、下载。
 - 主页作品预览、指定视频采集、批量采集。
 - 批量生成视频口播文案、标题、介绍、标签。
-- 支持评论区内容采集、导出。
+- 支持评论区内容查看、批量导出。
 - 支持会员套餐权益、队列优先级、后台配置。
 - 支持小米大模型配置、测试连接、保存调用配置。
 - 支持接口调用统计、安全审计、限流、防盗刷大模型额度。
@@ -50,17 +50,17 @@
 - 新增队列状态接口：`GET /api/v1/batch/queue/status`，后台/前台可查看当前运行任务数、排队任务数和资源上限。
 - 批量任务持久化继续保留，页面离开后可通过本地保存的任务 ID 恢复进度。
 - 新增评论数据导入/查看能力：`POST /api/v1/batch/:id/comments/import`、`GET /api/v1/batch/:id/comments`，评论导出统一走 `type=comments`。
-- 新增单条评论导出能力：`GET /api/v1/comments/export?aweme_id=&type=json|csv`，也支持 `task_id` 导出某个批量任务里已采集的评论；前台当前视频评论区增加 JSON/CSV 导出按钮。
+- 新增单条评论导出能力：`GET /api/v1/comments/export?aweme_id=&type=json|csv`，也支持 `task_id` 导出某个批量任务里已读取的评论；前台当前视频评论区增加 JSON/CSV 导出按钮。
 - 新增界面方案选择页：`GET /designs`，提供 A/B/C/D 四套可视化方向；已按用户选择采用“方案 A：抖音沉浸预览版”。
 - 新增后台日志列表接口：`GET /api/admin/usage`、`GET /api/admin/audit-logs`，后台可查看最近接口调用与安全审计记录。
 - 新增 `/favicon.ico` 兼容路由，减少浏览器默认图标 404。
 - App 图标已补齐：页面声明 `/site.webmanifest` 和 `/apple-touch-icon.svg`，后端提供 `/app-icon.svg`、`/apple-touch-icon.svg`、`/site.webmanifest`，移动端添加到桌面时显示抖映图标。
 - 后台登录失败锁定已落地：默认同 IP + 用户名 15 分钟内失败 5 次后锁定 15 分钟，并写入 `admin_login_failed` / `admin_login_locked` 审计日志；可通过 `ADMIN_LOGIN_MAX_FAILURES`、`ADMIN_LOGIN_WINDOW_MINUTES`、`ADMIN_LOGIN_LOCK_MINUTES` 调整。
 - 后台 TOTP 双重验证已落地：可通过环境变量 `ADMIN_TOTP_SECRET` 强制托管密钥，也可在 `/admin` 自助生成 Google Authenticator 密钥并验证启用；启用后后台账号密码登录必须带六位动态码。
-- 后台限流配置已落地：`GET/POST /api/admin/rate-limits` 支持配置单条解析、媒体代理、批量任务、AI 调用和评论采集额度，并写入 `rate_limits_save` 审计日志；后台页面已加入“接口限流”配置卡片。
+- 后台限流配置已落地：`GET/POST /api/admin/rate-limits` 支持配置单条解析、媒体代理、批量任务、AI 调用和评论读取/导出额度，并写入 `rate_limits_save` 审计日志；后台页面已加入“接口限流”配置卡片。
 - 后台安全策略已落地：`GET/POST /api/admin/security`、`POST /api/admin/block-ip` 支持 IP 黑名单、Origin/Referer 白名单、浏览器来源头检查和空 User-Agent 拦截，命中后写入 `security_blocked_request` 审计日志。
 - 后台运营管理已落地：`GET /api/admin/jobs`、`POST /api/admin/jobs/:id/retry`、`POST /api/admin/jobs/:id/cancel` 可查看、重试、取消批量任务；`POST /api/admin/jobs/:id/post-jobs/:jobId/cancel` 可取消批量 AI/评论后处理队列；`GET /api/admin/users`、`POST /api/admin/users/:id/plan`、`POST /api/admin/users/:id/disable` 可查看会员、调整套餐和禁用账号。
-- 会员批量任务隔离已落地：`GET /api/v1/batch/tasks` 只返回当前会员自己的批量任务；任务状态、AI、导出、评论查看/导入/采集都会校验任务归属，避免跨会员查看或操作。
+- 会员批量任务隔离已落地：`GET /api/v1/batch/tasks` 只返回当前会员自己的批量任务；任务状态、AI、导出、评论查看/导入/读取都会校验任务归属，避免跨会员查看或操作。
 - 批量封面下载已落地：`GET /api/v1/batch/:id/export?type=covers_zip` 会打包封面文件和 `cover-manifest.json`，前台“导出封面”按钮直接下载 ZIP。
 - 批量 CSV 导出已落地：`items_csv` 导出作品表格，`scripts_csv` 导出口播文案表格，`comments_csv` 导出评论表格，便于运营二次处理。
 - 后台套餐权限编辑已补齐：套餐表单可独立配置批量解析上限、批量 AI 上限、每日 AI 额度、评论导出开关、封面批量下载开关、并发和队列优先级。
@@ -68,7 +68,7 @@
 - 方案 A 已确认继续推进；后台小米/OpenAI-compatible 大模型配置补齐高级参数：请求超时、最大 token、temperature，便于控制速度、成本和文案发散度。
 - Cookie 会话 CSRF 防护已落地：会员登录/注册和后台登录都会下发 `csrf_token` 与同名 CSRF Cookie，使用 Cookie 鉴权的写操作必须携带 `X-CSRF-Token`，降低跨站盗用后台和会员批量能力的风险。
 - 后台接口调用汇总已落地：`GET /api/admin/usage/summary` 按接口类型、状态码、用户、IP 汇总最近调用，后台首页直接显示成功、错误、限流拦截和高频来源。
-- 批量后处理队列已落地：批量 AI 口播文案和批量评论采集支持 `async: true` 加入队列，进度写入批量任务 `post_jobs`，离开页面后回来仍能看到完成进度；并发由 `POST_JOB_MAX_ACTIVE` 控制；后台任务列表会展开每个后处理任务并支持取消 queued/running 状态。
+- 批量后处理队列已落地：批量 AI 口播文案和评论读取支持 `async: true` 加入队列，进度写入批量任务 `post_jobs`，离开页面后回来仍能看到完成进度；并发由 `POST_JOB_MAX_ACTIVE` 控制；后台任务列表会展开每个后处理任务并支持取消 queued/running 状态。
 - 在线人数压力自适应资源已落地：批量解析创建时会根据当前真实在线人数降低 `max_active_tasks` 和全局并发，默认 5 人在线开始进入更保守队列模式；`GET /api/v1/batch/queue/status` 返回 `adaptive` 资源状态。
 - 用户已确认采用方案 A，前台首页继续保持中心视频预览的“抖音沉浸预览版”；后台总览聚合接口 `GET /api/admin/dashboard` 已补齐，可一次返回在线人数、队列压力、调用汇总、限流、安全策略摘要和最近任务。
 - API 文档兼容别名已补齐：`POST /api/v1/auth/activate-register`、`POST /api/v1/jobs/start`、`GET /api/v1/jobs/:id`、`GET /api/v1/jobs/:id/items`、`GET /api/v1/jobs/:id/export.json`、`GET/POST /api/admin/activation-codes` 均会复用现有会员、批量任务和激活码逻辑。
@@ -134,7 +134,7 @@
 ### 2.6 评论区能力
 
 - 单条视频支持查看评论区内容。
-- 批量视频支持采集评论区内容。
+- 批量任务支持读取评论到任务缓存，供查看和导出使用。
 - 支持单独导出评论区内容。
 - 支持批量导出评论区内容。
 - 评论数据进入 JSON 导出。
@@ -500,7 +500,7 @@ flowchart TD
 - 单条解析实时执行。
 - 批量解析进入持久化队列。
 - AI 批量生成进入 AI 队列。
-- 评论采集进入评论队列。
+- 评论读取进入评论队列，只用于查看和导出。
 - 队列按会员优先级排序。
 - 当前在线人数达到 `BATCH_QUEUE_PRESSURE_ONLINE` 后，批量解析自动降低活动任务数和全局并发，降低后的任务自然排队。
 - 企业版可免排队或最高优先级。
@@ -707,12 +707,12 @@ Tab 5：会员
 - 离开页面后任务继续。
 - 任务恢复和历史查看。
 
-### 第四阶段：AI 文案和评论采集
+### 第四阶段：AI 文案和评论查看导出
 
 - 单条口播文案生成。
 - 批量口播文案生成。
 - 自定义提示词改写。
-- 评论内容采集。
+- 评论内容读取、查看和导出。
 - 批量导出 JSON/CSV/TXT。
 
 ### 第五阶段：限流、资源调度和上线验证
@@ -776,13 +776,16 @@ GET /api/v1/batch/:id/export?type=comments_csv
 
 ```text
 POST /api/v1/batch/:id/ai                 // body 支持 { "async": true }
-POST /api/v1/batch/:id/comments/collect   // body 支持 { "async": true }
+POST /api/v1/batch/:id/comments/fetch     // body 支持 { "async": true }，读取评论供查看/导出
+POST /api/v1/batch/:id/comments/collect   // 兼容别名，等同 /comments/fetch
+GET  /api/v1/batch/:id/comments           // 查看批量任务评论缓存
+GET  /api/v1/batch/:id/comments/export?type=json|csv
 GET  /api/v1/batch/:id/jobs
 POST /api/admin/jobs/:id/post-jobs/:jobId/cancel
 ```
 
 - `post_jobs` 会随 `GET /api/v1/batch/:id` 返回。
 - `ai` 类型表示批量口播文案生成队列。
-- `comments` 类型表示批量评论采集队列。
+- `comments` 类型表示评论读取队列，读取结果只用于查看和导出。
 - 队列字段包含 `status`、`queue_position`、`requested_count`、`completed_count`、`success_count`、`failed_count`。
 - 后台取消后处理任务会把目标 `post_jobs[].status` 标记为 `cancelled`，并写入 `batch_post_job_cancel` 审计日志。

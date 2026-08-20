@@ -1,6 +1,6 @@
 # Douyin Watermark-Free Parser
 
-A lightweight Douyin parsing service with a Douyin-style creator workspace, normalized API, compatibility API, media preview proxy, download proxy, member activation, batch profile parsing, comments collection, AI copywriting, and an admin console.
+A lightweight Douyin parsing service with a Douyin-style creator workspace, normalized API, compatibility API, media preview proxy, download proxy, member activation, batch profile parsing, comment viewing/export, AI copywriting, and an admin console.
 
 ## Features
 
@@ -12,8 +12,8 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Real online count only; default `ONLINE_BASE_COUNT=0`.
 - Member activation-code registration, account/password login, plan permissions, queue priority, and batch privileges.
 - Profile works preview, member-isolated batch task history, persistent queue progress, and JSON/CSV/text/cover ZIP/comment export.
-- Async batch post-processing queue for batch AI copywriting and batch comments collection; progress is persisted in each batch task.
-- Single and batch comments collection/import/export.
+- Async batch post-processing queue for batch AI copywriting and batch comment fetching for viewing/export; progress is persisted in each batch task.
+- Single-video comments view/export, plus batch-task comments view/export.
 - Transcript-draft parsing plus Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
 - Admin console `/admin` with password + Google Authenticator/TOTP self-service setup, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
 - Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
@@ -145,8 +145,10 @@ GET  /api/v1/comments?aweme_id=<id>&count=20
 GET  /api/v1/comments/export?aweme_id=<id>&type=json|csv
 GET  /api/v1/comments/export?task_id=<batch-id>&type=json|csv
 GET  /api/v1/batch/:id/comments
+GET  /api/v1/batch/:id/comments/export?type=json|csv
 POST /api/v1/batch/:id/comments/import
-POST /api/v1/batch/:id/comments/collect
+POST /api/v1/batch/:id/comments/fetch
+POST /api/v1/batch/:id/comments/collect   # compatibility alias for /comments/fetch
 POST /api/v1/ai/transcript
 POST /api/v1/ai/script
 POST /api/v1/ai/rewrite
@@ -154,7 +156,7 @@ POST /api/v1/ai/tags
 POST /api/v1/ai/batch
 ```
 
-For batch AI and comments collection, pass `"async": true` to queue the operation and poll `GET /api/v1/batch/:id` or `GET /api/v1/batch/:id/jobs` for `post_jobs` progress.
+For batch AI and batch comment fetching, pass `"async": true` to queue the operation and poll `GET /api/v1/batch/:id` or `GET /api/v1/batch/:id/jobs` for `post_jobs` progress. Comments are not posted; they are read into the task cache for viewing and JSON/CSV export.
 
 Registration example:
 
@@ -227,7 +229,7 @@ Admin login supports username/password plus Google Authenticator/TOTP. `/api/adm
 | `BATCH_QUEUE_PRESSURE_ONLINE` | `5` | Online users threshold where batch resources start to shrink |
 | `BATCH_QUEUE_PRESSURE_STEP` | `5` | More online users per additional resource pressure level |
 | `AI_RATE_LIMIT_PER_DAY` | `1000` | Global AI call ceiling per user |
-| `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comments collection ceiling per user |
+| `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comment fetch/export ceiling per user |
 | `POST_JOB_MAX_ACTIVE` | `2` | Max concurrent async batch AI/comment post-processing jobs |
 
 ## Deployment

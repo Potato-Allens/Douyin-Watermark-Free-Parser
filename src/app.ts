@@ -976,14 +976,53 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/v1/batch/:id/comments/export", async (c) => {
+    const store = await creatorStorePromise;
+    let sessionKey = "unknown";
+    try {
+      await guardPublicAccess(c, "batch_comments_export");
+      const session = await requireVip(c, await getStore());
+      sessionKey = session.code;
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment view/export", 403);
+      }
+      const requestUrl = new URL(c.req.url);
+      const type = requestUrl.searchParams.get("type") === "csv" ? "csv" : "json";
+      const awemeId = requestUrl.searchParams.get("aweme_id");
+      const taskId = c.req.param("id") ?? "";
+      if (!taskId) throw new DouyinServiceError("MISSING_URL", "batch task id is required", 400);
+      const task = await getBatchTask(taskId);
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+      assertBatchTaskAccess(task, session);
+      const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
+      const exportedCount = items.reduce((total, item) => total + item.comments.length, 0);
+      await store.recordUsage({ kind: "batch_comments_export", user_key: session.code, ip: getClientIp(c), path: new URL(c.req.url).pathname, status: 200, detail: JSON.stringify({ task_id: task.id, aweme_id: awemeId ?? null, count: exportedCount, type }) });
+      return commentsExportResponse(
+        {
+          task_id: task.id,
+          homepage_url: task.homepage_url,
+          aweme_id: awemeId ?? null,
+          items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })),
+        },
+        type,
+        `comments-${task.id}`,
+      );
+    } catch (error) {
+      await store.recordUsage({ kind: "batch_comments_export", user_key: sessionKey, ip: getClientIp(c), path: new URL(c.req.url).pathname, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      return jsonError(c, error);
+    }
+  });
+
   app.post("/api/v1/batch/:id/comments/import", async (c) => {
     try {
       await guardPublicAccess(c, "batch_comments_import");
       const session = await requireVip(c, await getStore(), { mutation: true });
       if (isMemberSession(session) && !session.plan.comment_export) {
-        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment import/export", 403);
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment view/export", 403);
       }
-      const task = await getBatchTask(c.req.param("id"));
+      const taskId = c.req.param("id") ?? "";
+      if (!taskId) throw new DouyinServiceError("MISSING_URL", "batch task id is required", 400);
+      const task = await getBatchTask(taskId);
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       assertBatchTaskAccess(task, session);
       const body = await readJsonBody(c);
@@ -1457,15 +1496,18 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.post("/api/v1/batch/:id/comments/collect", async (c) => {
+  const handleBatchCommentsFetch = async (c: Context) => {
     const store = await creatorStorePromise;
     try {
-      await guardPublicAccess(c, "batch_comments_collect");
+      const routePath = new URL(c.req.url).pathname;
+      await guardPublicAccess(c, "batch_comments_fetch");
       const session = await requireVip(c, await getStore(), { mutation: true });
       if (isMemberSession(session) && !session.plan.comment_export) {
-        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment collection", 403);
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment view/export", 403);
       }
-      const task = await getBatchTask(c.req.param("id"));
+      const taskId = c.req.param("id") ?? "";
+      if (!taskId) throw new DouyinServiceError("MISSING_URL", "batch task id is required", 400);
+      const task = await getBatchTask(taskId);
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       assertBatchTaskAccess(task, session);
       const body = await readJsonBody(c);
@@ -1512,20 +1554,28 @@ export function createApp(options: CreateAppOptions = {}) {
         const job = createBatchPostJob("comments", items.length, permissionsForSession(session).queue_priority, { count_per_video: countPerVideo, video_count: items.length });
         await enqueuePostJob(task, job, async (runningJob) => {
           const data = await runCommentsJob(runningJob);
-          await store.recordUsage({ kind: "batch_comments_collect_async_done", user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/comments/collect`, status: 200, detail: JSON.stringify({ job_id: runningJob.id, video_count: items.length, collected_count: data.collectedCount }) });
+          await store.recordUsage({ kind: "batch_comments_fetch_async_done", user_key: session.code, ip: getClientIp(c), path: routePath, status: 200, detail: JSON.stringify({ job_id: runningJob.id, video_count: items.length, fetched_count: data.collectedCount }) });
         });
-        await store.recordUsage({ kind: "batch_comments_collect_queued", user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/comments/collect`, status: 202, detail: JSON.stringify({ job_id: job.id, video_count: items.length }) });
+        await store.recordUsage({ kind: "batch_comments_fetch_queued", user_key: session.code, ip: getClientIp(c), path: routePath, status: 202, detail: JSON.stringify({ job_id: job.id, video_count: items.length }) });
         return c.json(success({ task_id: task.id, queued: true, job, post_jobs: task.post_jobs }), 202);
       }
 
       const { collectedCount, results } = await runCommentsJob();
       await saveBatchTask(task);
-      await store.recordUsage({ kind: "batch_comments_collect", user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/comments/collect`, status: 200, detail: JSON.stringify({ video_count: items.length, collected_count: collectedCount }) });
-      return c.json(success({ task_id: task.id, video_count: items.length, collected_count: collectedCount, items: results }));
+      await store.recordUsage({ kind: "batch_comments_fetch", user_key: session.code, ip: getClientIp(c), path: routePath, status: 200, detail: JSON.stringify({ video_count: items.length, fetched_count: collectedCount }) });
+      return c.json(success({ task_id: task.id, video_count: items.length, fetched_count: collectedCount, collected_count: collectedCount, items: results }));
     } catch (error) {
-      await store.recordUsage({ kind: "batch_comments_collect", user_key: "unknown", ip: getClientIp(c), path: `/api/v1/batch/${c.req.param("id")}/comments/collect`, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      await store.recordUsage({ kind: "batch_comments_fetch", user_key: "unknown", ip: getClientIp(c), path: new URL(c.req.url).pathname, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
+  };
+
+  app.post("/api/v1/batch/:id/comments/fetch", async (c) => {
+    return handleBatchCommentsFetch(c);
+  });
+
+  app.post("/api/v1/batch/:id/comments/collect", async (c) => {
+    return handleBatchCommentsFetch(c);
   });
 
   app.get("/api/admin/usage/summary", async (c) => {
@@ -2221,7 +2271,7 @@ async function batchExportResponse(task: BatchTask, type: string, fetcher?: Fetc
       {
         task_id: task.id,
         homepage_url: task.homepage_url,
-        note: "comments are exported from collected task data; empty arrays mean no comment source has been collected for that item yet",
+        note: "comments are exported from the task comment cache; use the comment fetch/view endpoint first when arrays are empty",
         comments: task.items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })),
       },
       `batch-${task.id}-comments-${timestamp}.json`,

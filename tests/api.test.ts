@@ -63,6 +63,8 @@ describe("api routes", () => {
     expect(html).toContain("/api/v1/ai/tags");
     expect(html).toContain("/api/v1/ai/batch");
     expect(html).toContain('id="collectBatchCommentsBtn"');
+    expect(html).toContain('id="viewBatchCommentsBtn"');
+    expect(html).toContain("/comments/fetch");
     expect(html).toContain('id="collectMini"');
     expect(html).toContain('downloadExport("covers_zip")');
     expect(html).toContain('downloadExport("items_csv")');
@@ -758,7 +760,7 @@ describe("api routes", () => {
       expect(jobs.status).toBe(200);
       expect(jobsBody.data.some((job: any) => job.id === taskId && job.progress_percent >= 0)).toBe(true);
 
-      const asyncComments = await app.request(`/api/v1/batch/${taskId}/comments/collect`, {
+      const asyncComments = await app.request(`/api/v1/batch/${taskId}/comments/fetch`, {
         method: "POST",
         headers,
         body: JSON.stringify({ count_per_video: 1, video_count: 1, async: true }),
@@ -959,7 +961,7 @@ describe("api routes", () => {
     }
   });
 
-  it("fetches video comments and collects them into a batch task export", async () => {
+  it("fetches, views, and exports video comments without posting comments", async () => {
     const store = await createMemoryVipStore(["COMMENT-1"]);
     const fetcher = async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -1038,7 +1040,7 @@ describe("api routes", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
 
-    const collected = await app.request(`/api/v1/batch/${taskId}/comments/collect`, {
+    const collected = await app.request(`/api/v1/batch/${taskId}/comments/fetch`, {
       method: "POST",
       headers,
       body: JSON.stringify({ count_per_video: 10 }),
@@ -1046,10 +1048,22 @@ describe("api routes", () => {
     const collectedBody = await collected.json();
     expect(collected.status).toBe(200);
     expect(collectedBody.data.collected_count).toBe(1);
+    expect(collectedBody.data.fetched_count).toBe(1);
+
+    const viewed = await app.request(`/api/v1/batch/${taskId}/comments`, { headers });
+    const viewedBody = await viewed.json();
+    expect(viewed.status).toBe(200);
+    expect(viewedBody.data.items[0].comments[0].text).toBe("这个视频很有用");
 
     const exported = await app.request(`/api/v1/batch/${taskId}/export?type=comments`, { headers });
     const exportedBody = await exported.json();
     expect(exportedBody.comments[0].comments[0].text).toBe("这个视频很有用");
+
+    const exportedDirect = await app.request(`/api/v1/batch/${taskId}/comments/export?type=json`, { headers });
+    const exportedDirectBody = await exportedDirect.json();
+    expect(exportedDirect.status).toBe(200);
+    expect(exportedDirect.headers.get("content-disposition")).toContain(`comments-${taskId}`);
+    expect(exportedDirectBody.items[0].comments[0].text).toBe("这个视频很有用");
 
     const exportedTaskCommentsCsv = await app.request(`/api/v1/comments/export?task_id=${taskId}&type=csv`, { headers });
     const exportedTaskCommentsCsvText = await exportedTaskCommentsCsv.text();
