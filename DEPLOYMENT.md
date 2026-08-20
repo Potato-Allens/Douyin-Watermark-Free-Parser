@@ -40,6 +40,7 @@ COMMENT_STORE_DIR=/app/.data/comments
 COMMENTS_MAX_TOP_LEVEL_PER_JOB=50000
 COMMENTS_TASK_CACHE_LIMIT=200
 COMMENTS_PAGE_DELAY_MS=250
+DOUYIN_PROFILE_BROWSER=1
 DOUYIN_COMMENTS_BROWSER=1
 DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
 ADMIN_LOGIN_MAX_FAILURES=5
@@ -56,7 +57,7 @@ FFMPEG_TIMEOUT_MS=120000
 
 `ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty and TOTP has never been bound, the `/admin` login page can generate the first scan QR after the admin username/password is verified; scan it, enter the 6-digit code, and the page will enable TOTP and sign in. After TOTP is enabled, displaying an existing QR/secret requires the current 6-digit code. Unauthenticated visitors receive only the login page; the backend workspace is rendered after a valid cookie login.
 
-Real comment viewing/export first tries the lightweight HTTP interface. If Douyin returns an empty anti-bot response, Node automatically falls back to a headless Chromium page and captures the browser-generated signed comment response. Install Chromium on Linux and set `DOUYIN_CHROMIUM_PATH` when it is not in a standard path:
+Homepage works and real comment viewing/export first try the lightweight HTTP interface. If Douyin returns an empty anti-bot response, Node automatically falls back to a headless Chromium page and captures the browser-generated signed response. Install Chromium on Linux and set `DOUYIN_CHROMIUM_PATH` when it is not in a standard path:
 
 ```bash
 sudo apt-get update
@@ -102,6 +103,7 @@ Environment=ONLINE_BASE_COUNT=0
 Environment=ADMIN_USERNAME=admin
 Environment=ADMIN_PASSWORD=change-this-password
 Environment=ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
+Environment=DOUYIN_PROFILE_BROWSER=1
 Environment=DOUYIN_COMMENTS_BROWSER=1
 Environment=DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
 Environment=PUBLIC_AI_FEATURES_ENABLED=false
@@ -143,6 +145,7 @@ docker run -d \
   -e ADMIN_USERNAME=admin \
   -e ADMIN_PASSWORD="change-this-password" \
   -e ADMIN_TOTP_SECRET="BASE32_TOTP_SECRET" \
+  -e DOUYIN_PROFILE_BROWSER=1 \
   -e DOUYIN_COMMENTS_BROWSER=1 \
   -e ONLINE_BASE_COUNT=0 \
   douyin-parser

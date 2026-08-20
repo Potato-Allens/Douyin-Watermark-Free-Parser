@@ -1930,4 +1930,27 @@ describe("api routes", () => {
     expect(queueBody.data.max_active_tasks).toBe(1);
     expect(queueBody.data.max_global_concurrency).toBe(3);
   });
+
+  it("does not report a successful empty profile when the upstream post api is blocked", async () => {
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/aweme/v1/web/aweme/post/")) {
+        return new Response("", { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response('<html>{"sec_uid":"SEC_EMPTY"}</html>', {
+        headers: { "content-type": "text/html" },
+      });
+    };
+    const app = createApp({ fetcher, cacheTtlMs: 0 });
+    const response = await app.request("/api/v1/profile/preview", {
+      method: "POST",
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_EMPTY", count: 8 }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("FETCH_FAILED");
+    expect(body.error.detail).toContain("empty body");
+  });
 });

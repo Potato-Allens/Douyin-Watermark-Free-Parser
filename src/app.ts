@@ -414,7 +414,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     const loadedCount = offset + items.length;
     const fetchedToLimit = inspect.aweme_ids.length >= offset + limit;
-    const hasMore = inspect.aweme_ids.length > loadedCount || (typeof inspect.total_count === "number" ? loadedCount < inspect.total_count : fetchedToLimit);
+    const hasMore = inspect.aweme_ids.length > loadedCount || (fetchedToLimit && inspect.has_more);
     return {
       ...inspect,
       offset,

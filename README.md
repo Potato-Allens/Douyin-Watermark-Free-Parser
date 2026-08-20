@@ -261,8 +261,9 @@ Open `/admin` → **AI 模型** and configure:
 | `ASR_MEDIA_TIMEOUT_MS` | `120000` | Source video download timeout |
 | `FFMPEG_PATH` | `ffmpeg` | FFmpeg executable path |
 | `FFMPEG_TIMEOUT_MS` | `120000` | Audio extraction timeout |
+| `DOUYIN_PROFILE_BROWSER` | `1` | Enable the Node Chromium fallback for signed homepage-work requests; set `0` to disable |
 | `DOUYIN_COMMENTS_BROWSER` | `1` | Enable the Node Chromium fallback when Douyin returns an empty direct comment response; set `0` to disable |
-| `DOUYIN_CHROMIUM_PATH` | auto-detect | Optional absolute Chromium/Chrome executable path used by real comment viewing/export |
+| `DOUYIN_CHROMIUM_PATH` | auto-detect | Optional absolute Chromium/Chrome executable path used by homepage works and real comment viewing/export |
 | `DOUYIN_COOKIE` | empty | Optional Douyin browser cookie header for deeper reply pages; keep it server-side only |
 
 ## Deployment

@@ -11,6 +11,7 @@ export interface ProfileInspectResult {
   sec_user_id: string | null;
   total_count: number | null;
   available_count: number;
+  has_more: boolean;
   aweme_ids: string[];
 }
 
@@ -28,20 +29,35 @@ export async function inspectDouyinProfile(input: string, options: ProfileInspec
   const totalFromHtml = extractTotalCount(page.text);
   let apiIds: string[] = [];
   let apiTotal: number | null = null;
+  let apiHasMore: boolean | null = null;
+  let apiError: unknown = null;
 
   if (secUserId) {
     try {
       const api = await fetchProfilePostList(secUserId, options);
       apiIds = api.awemeIds;
       apiTotal = api.totalCount;
-    } catch {
-      // HTML extraction is kept as fallback. The caller receives a clear error only when no ids/count can be found.
+      apiHasMore = api.hasMore;
+    } catch (error) {
+      apiError = error;
+      if (shouldUseProfileBrowserFallback(options, error)) {
+        try {
+          const browserApi = await fetchProfilePostListViaBrowser(secUserId, options);
+          apiIds = browserApi.awemeIds;
+          apiTotal = browserApi.totalCount;
+          apiHasMore = browserApi.hasMore;
+          apiError = null;
+        } catch (browserError) {
+          apiError = browserError;
+        }
+      }
     }
   }
 
   const awemeIds = unique([...apiIds, ...htmlIds]);
   const totalCount = apiTotal ?? totalFromHtml ?? (awemeIds.length > 0 ? awemeIds.length : null);
-  if (!secUserId && awemeIds.length === 0 && totalCount === null) {
+  if (awemeIds.length === 0 && totalCount === null) {
+    if (apiError instanceof DouyinServiceError) throw apiError;
     throw new DouyinServiceError("PARSE_FAILED", "profile page did not expose sec_user_id or aweme ids");
   }
 
@@ -51,6 +67,7 @@ export async function inspectDouyinProfile(input: string, options: ProfileInspec
     sec_user_id: secUserId,
     total_count: totalCount,
     available_count: awemeIds.length,
+    has_more: apiHasMore ?? (typeof totalCount === "number" && awemeIds.length < totalCount),
     aweme_ids: awemeIds,
   };
 }
@@ -70,7 +87,10 @@ async function fetchProfileText(url: string, options: ParseOptions): Promise<{ t
   return { text: await response.text(), url: response.url || url };
 }
 
-async function fetchProfilePostList(secUserId: string, options: ProfileInspectOptions): Promise<{ awemeIds: string[]; totalCount: number | null }> {
+async function fetchProfilePostList(
+  secUserId: string,
+  options: ProfileInspectOptions,
+): Promise<{ awemeIds: string[]; totalCount: number | null; hasMore: boolean }> {
   const fetcher: FetchLike = options.fetcher ?? globalThis.fetch;
   if (!fetcher) throw new DouyinServiceError("FETCH_FAILED", "fetch is not available");
   const maxItems = clampInt(options.maxItems ?? 20, 1, 1000);
@@ -81,6 +101,7 @@ async function fetchProfilePostList(secUserId: string, options: ProfileInspectOp
   let cursor = 0;
   let page = 0;
   let hasMore = true;
+  let resultHasMore = false;
 
   while (awemeIds.length < maxItems && hasMore && page < maxPages) {
     const pageCount = Math.min(pageSize, maxItems - awemeIds.length);
@@ -94,11 +115,17 @@ async function fetchProfilePostList(secUserId: string, options: ProfileInspectOp
     page += 1;
     const nextCursor = data.nextCursor ?? cursor;
     const progressed = nextCursor !== cursor || awemeIds.length > beforeCount;
-    hasMore = Boolean(data.hasMore) && progressed && awemeIds.length < maxItems;
+    const responseWasTruncated = data.awemeIds.length > awemeIds.length - beforeCount;
+    resultHasMore = responseWasTruncated || (Boolean(data.hasMore) && progressed);
+    hasMore = resultHasMore && awemeIds.length < maxItems;
     cursor = nextCursor;
   }
 
-  return { awemeIds, totalCount };
+  if (awemeIds.length === 0 && totalCount === null) {
+    throw new DouyinServiceError("PARSE_FAILED", "profile post api returned no works metadata");
+  }
+  if (awemeIds.length >= maxItems && totalCount !== null && awemeIds.length < totalCount) resultHasMore = true;
+  return { awemeIds, totalCount, hasMore: resultHasMore };
 }
 
 async function fetchProfilePostPage(
@@ -144,13 +171,178 @@ async function fetchProfilePostPage(
   });
   if (!response.ok) throw new DouyinServiceError("FETCH_FAILED", `profile post api status ${response.status}`);
   const text = await response.text();
-  const data = JSON.parse(text) as unknown;
+  if (!text.trim()) throw new DouyinServiceError("FETCH_FAILED", "profile post api returned an empty body");
+  let data: unknown;
+  try {
+    data = JSON.parse(text) as unknown;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new DouyinServiceError("PARSE_FAILED", `profile post api returned non-json body: ${detail}`);
+  }
+  const statusCode = readNumber(data, ["status_code"]);
+  if (statusCode !== null && statusCode !== 0) {
+    throw new DouyinServiceError("FETCH_FAILED", `${statusCode}: profile post api returned non-zero status`);
+  }
   const awemeList = readArray(data, ["aweme_list"]);
   const ids = extractAwemeIds(JSON.stringify(awemeList.length > 0 ? awemeList : data));
   const total = readNumber(data, ["total"]) ?? readNumber(data, ["max_count"]);
   const nextCursor = readNumber(data, ["max_cursor"]) ?? readNumber(data, ["cursor"]) ?? readNumber(data, ["next_cursor"]);
   const hasMore = readBoolean(data, ["has_more"]) ?? (readNumber(data, ["has_more"]) ?? 0) > 0;
   return { awemeIds: ids, totalCount: total, nextCursor, hasMore };
+}
+
+async function fetchProfilePostListViaBrowser(
+  secUserId: string,
+  options: ProfileInspectOptions,
+): Promise<{ awemeIds: string[]; totalCount: number | null; hasMore: boolean }> {
+  const maxItems = clampInt(options.maxItems ?? 20, 1, 1000);
+  const timeoutMs = clampInt(options.timeoutMs ?? 35_000, 10_000, 90_000);
+  const executablePath = await findProfileChromiumExecutable();
+  if (!executablePath) throw new DouyinServiceError("FETCH_FAILED", "Chromium executable was not found for profile collection");
+
+  let browser: any = null;
+  const ids = new Map<string, true>();
+  const pending = new Set<Promise<void>>();
+  let totalCount: number | null = null;
+  let postResponseSeen = false;
+  let postHasMore = true;
+  let lastProgressAt = Date.now();
+
+  try {
+    const playwrightModule = "playwright" + "-core";
+    const mod: any = await import(playwrightModule);
+    browser = await mod.chromium.launch({
+      executablePath,
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"],
+    });
+    const context = await browser.newContext({
+      userAgent: options.userAgent ?? DESKTOP_USER_AGENT,
+      locale: "zh-CN",
+      viewport: { width: 1365, height: 900 },
+    });
+    await applyConfiguredProfileCookies(context);
+    const page = await context.newPage();
+
+    page.on("response", (response: any) => {
+      const url = response.url();
+      if (!url.includes("/aweme/v1/web/aweme/post/") && !url.includes("/aweme/v1/web/user/profile/other/")) return;
+      const task = (async () => {
+        try {
+          const text = await response.text();
+          if (!text.trim()) return;
+          const data = JSON.parse(text) as unknown;
+          if ((readNumber(data, ["status_code"]) ?? 0) !== 0) return;
+          if (url.includes("/aweme/v1/web/user/profile/other/")) {
+            totalCount = readNumber(data, ["user", "aweme_count"]) ?? totalCount;
+            return;
+          }
+
+          postResponseSeen = true;
+          const before = ids.size;
+          const awemeList = readArray(data, ["aweme_list"]);
+          for (const id of extractAwemeIds(JSON.stringify(awemeList.length > 0 ? awemeList : data))) ids.set(id, true);
+          totalCount = readNumber(data, ["total"]) ?? totalCount;
+          postHasMore = Boolean(readBoolean(data, ["has_more"]) ?? readNumber(data, ["has_more"]));
+          if (ids.size > before) lastProgressAt = Date.now();
+        } catch {
+          // Ignore anti-bot and partial responses; the collected result below decides success.
+        }
+      })();
+      pending.add(task);
+      void task.finally(() => pending.delete(task));
+    });
+
+    await page.goto(`https://www.douyin.com/user/${encodeURIComponent(secUserId)}`, {
+      waitUntil: "domcontentloaded",
+      timeout: timeoutMs,
+    });
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(800);
+      if (ids.size >= maxItems) break;
+      if (postResponseSeen && !postHasMore) break;
+      if (postResponseSeen && Date.now() - lastProgressAt > 8_000) break;
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)).catch(() => undefined);
+      await page.mouse.wheel(0, 2_400).catch(() => undefined);
+    }
+    if (pending.size > 0) await Promise.allSettled([...pending]);
+
+    const allIds = [...ids.keys()];
+    const awemeIds = allIds.slice(0, maxItems);
+    if (awemeIds.length === 0 && totalCount === null) {
+      throw new DouyinServiceError("FETCH_FAILED", "browser profile collector did not receive works metadata");
+    }
+    const hasMore = postHasMore || allIds.length > awemeIds.length || (awemeIds.length >= maxItems && totalCount !== null && awemeIds.length < totalCount);
+    return { awemeIds, totalCount, hasMore };
+  } catch (error) {
+    if (error instanceof DouyinServiceError) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new DouyinServiceError("FETCH_FAILED", `browser profile collector failed: ${detail}`);
+  } finally {
+    if (browser) await Promise.race([browser.close().catch(() => undefined), sleep(2_500)]);
+  }
+}
+
+function shouldUseProfileBrowserFallback(options: ProfileInspectOptions, error: unknown): boolean {
+  if (options.fetcher || !isNodeRuntime()) return false;
+  const env = readProcessEnv();
+  if (env.DOUYIN_PROFILE_BROWSER === "0" || env.DOUYIN_PROFILE_BROWSER?.toLowerCase() === "false") return false;
+  return error instanceof DouyinServiceError && (error.code === "FETCH_FAILED" || error.code === "PARSE_FAILED");
+}
+
+function isNodeRuntime(): boolean {
+  return typeof process !== "undefined" && Boolean(process.versions?.node);
+}
+
+function readProcessEnv(): Record<string, string | undefined> {
+  return isNodeRuntime() ? process.env : {};
+}
+
+async function findProfileChromiumExecutable(): Promise<string | undefined> {
+  const env = readProcessEnv();
+  const configured = env.DOUYIN_CHROMIUM_PATH || env.CHROMIUM_PATH || env.CHROME_PATH;
+  if (configured) return configured;
+  const candidates =
+    process.platform === "win32"
+      ? [
+          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+          `${env.LOCALAPPDATA ?? ""}\\Google\\Chrome\\Application\\chrome.exe`,
+          "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+          "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        ]
+      : ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome"];
+  const fs = await import("node:fs");
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate));
+}
+
+async function applyConfiguredProfileCookies(context: any): Promise<void> {
+  const raw = readProcessEnv().DOUYIN_COOKIE?.trim();
+  if (!raw) return;
+  const cookies = raw
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const separator = part.indexOf("=");
+      if (separator <= 0) return null;
+      return {
+        name: part.slice(0, separator).trim(),
+        value: part.slice(separator + 1).trim(),
+        domain: ".douyin.com",
+        path: "/",
+        secure: true,
+        sameSite: "Lax" as const,
+      };
+    })
+    .filter((cookie): cookie is NonNullable<typeof cookie> => cookie !== null);
+  if (cookies.length > 0) await context.addCookies(cookies);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeProfileInput(input: string): string {
