@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import QRCode from "qrcode";
 import {
   DouyinServiceError,
   cancelBatchTask,
@@ -1277,8 +1278,10 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/admin/totp", async (c) => {
     try {
       requireAdmin(c, adminSessions);
-      const { secret: _secret, ...data } = await getEffectiveAdminTotp();
-      return c.json(success(data));
+      const { secret, ...data } = await getEffectiveAdminTotp();
+      const otpauth_uri = secret ? buildOtpAuthUri({ issuer: data.issuer ?? "抖映灵感台", account: data.account ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin"), secret }) : null;
+      const qr_svg = otpauth_uri ? await buildQrSvg(otpauth_uri) : null;
+      return c.json(success({ ...data, otpauth_uri, qr_svg }));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -1293,8 +1296,9 @@ export function createApp(options: CreateAppOptions = {}) {
       const account = asString(body.account) ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
       const secret = generateTotpSecret();
       const otpauth_uri = buildOtpAuthUri({ issuer, account, secret });
+      const qr_svg = await buildQrSvg(otpauth_uri);
       await store.recordAudit({ actor: "admin", action: "admin_totp_setup_created", ip: getClientIp(c), detail: JSON.stringify({ issuer, account }) });
-      return c.json(success({ enabled: false, secret, issuer, account, otpauth_uri }));
+      return c.json(success({ enabled: false, secret, issuer, account, otpauth_uri, qr_svg }));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -1318,8 +1322,10 @@ export function createApp(options: CreateAppOptions = {}) {
       const issuer = asString(body.issuer) ?? "抖映灵感台";
       const account = asString(body.account) ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
       const data = await store.saveAdminTotpSettings({ enabled: true, secret, issuer, account });
+      const otpauth_uri = buildOtpAuthUri({ issuer, account, secret });
+      const qr_svg = await buildQrSvg(otpauth_uri);
       await store.recordAudit({ actor: "admin", action: "admin_totp_enable", ip: getClientIp(c), detail: JSON.stringify({ issuer, account }) });
-      return c.json(success({ ...data, source: "store", configurable: true }));
+      return c.json(success({ ...data, source: "store", configurable: true, otpauth_uri, qr_svg }));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -2873,6 +2879,19 @@ function buildOtpAuthUri(input: { issuer: string; account: string; secret: strin
   url.searchParams.set("digits", "6");
   url.searchParams.set("period", "30");
   return url.toString();
+}
+
+async function buildQrSvg(value: string): Promise<string> {
+  return QRCode.toString(value, {
+    type: "svg",
+    errorCorrectionLevel: "M",
+    margin: 2,
+    width: 220,
+    color: {
+      dark: "#0b0b0d",
+      light: "#ffffff",
+    },
+  });
 }
 
 function normalizeTotpSecret(value: unknown): string | null {

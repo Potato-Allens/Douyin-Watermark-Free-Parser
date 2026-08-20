@@ -120,6 +120,10 @@ describe("api routes", () => {
     expect(html).toContain("/api/admin/rate-limits");
     expect(html).toContain("/api/admin/totp/setup");
     expect(html).toContain('id="totpSecret"');
+    expect(html).toContain('id="totpQr"');
+    expect(html).toContain("&#29983;&#25104;&#20108;&#32500;&#30721;");
+    expect(html).not.toContain("Google Authenticator");
+    expect(html).not.toContain("Setup TOTP");
     expect(html).toContain("/api/admin/dashboard");
     expect(html).toContain("/api/admin/codes");
     expect(html).toContain("/api/admin/usage/summary");
@@ -301,6 +305,7 @@ describe("api routes", () => {
       expect(setup.status).toBe(200);
       expect(setupBody.data.secret.length).toBeGreaterThanOrEqual(16);
       expect(setupBody.data.otpauth_uri).toContain("otpauth://totp/");
+      expect(setupBody.data.qr_svg).toContain("<svg");
       const validTotp = currentTotpCode(setupBody.data.secret);
       const wrongTotp = validTotp === "000000" ? "000001" : "000000";
 
@@ -320,6 +325,12 @@ describe("api routes", () => {
       expect(enabled.status).toBe(200);
       expect(enabledBody.data.enabled).toBe(true);
       expect(enabledBody.data.secret_masked).toContain("****");
+      expect(enabledBody.data.qr_svg).toContain("<svg");
+
+      const loadedAfterEnable = await app.request("/api/admin/totp", { headers: adminHeaders });
+      const loadedAfterEnableBody = await loadedAfterEnable.json();
+      expect(loadedAfterEnableBody.data.otpauth_uri).toContain("otpauth://totp/");
+      expect(loadedAfterEnableBody.data.qr_svg).toContain("<svg");
 
       const loginWithoutTotp = await app.request("/api/admin/login", {
         method: "POST",
