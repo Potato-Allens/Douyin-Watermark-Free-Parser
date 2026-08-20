@@ -26,15 +26,37 @@ export interface BatchItem {
   };
   ai_copy: AiCopyResult | null;
   comments: BatchComment[];
+  comment_collection: BatchCommentCollectionState;
   error: string | null;
 }
 
 export interface BatchComment {
   cid: string;
+  parent_cid: string | null;
+  level: 1 | 2;
   nickname: string | null;
+  reply_to_nickname: string | null;
   text: string;
   digg_count: number | null;
   create_time: string | null;
+  reply_count: number;
+}
+
+export interface BatchCommentCollectionState {
+  status: "idle" | "running" | "completed" | "failed" | "cancelled";
+  mode: "limited" | "all";
+  requested_count: number | null;
+  collected_count: number;
+  top_level_count: number;
+  reply_count: number;
+  next_cursor: number;
+  has_more: boolean;
+  estimated_total: number | null;
+  pages_fetched: number;
+  reply_pages_fetched: number;
+  current_parent_cid: string | null;
+  updated_at: string | null;
+  error: string | null;
 }
 
 export interface BatchPostJob {
@@ -87,6 +109,14 @@ export interface BatchStartOptions {
   queuePriority?: number;
   maxActiveTasks?: number;
   maxGlobalConcurrency?: number;
+}
+
+export interface CommentCollectionTaskOptions {
+  parsed: ParsedDouyinInfo;
+  sourceUrl: string;
+  makeDownloadUrl: (parsed: ParsedDouyinInfo) => string | null;
+  ownerKey?: string | null;
+  queuePriority?: number;
 }
 
 export interface BatchQueueSnapshot {
@@ -157,6 +187,46 @@ export async function startBatchTask(options: BatchStartOptions): Promise<BatchT
   return task;
 }
 
+export async function createCommentCollectionTask(options: CommentCollectionTaskOptions): Promise<BatchTask> {
+  await loadPersistedTasks();
+  const awemeId = options.parsed.source.aweme_id;
+  if (!awemeId) throw new DouyinServiceError("PARSE_FAILED", "parsed video does not contain aweme_id");
+  const now = new Date().toISOString();
+  const item = createEmptyBatchItem(awemeId);
+  item.status = "success";
+  item.title = options.parsed.content.desc;
+  item.author_nickname = options.parsed.author.nickname;
+  item.cover_url = options.parsed.media.cover_url;
+  item.video_url = options.parsed.media.video_url;
+  item.download_url = options.makeDownloadUrl(options.parsed);
+  item.music_title = options.parsed.music.title;
+  item.music_author = options.parsed.music.author;
+  item.stats = { ...options.parsed.stats };
+  const task: BatchTask = {
+    id: randomId(),
+    homepage_url: options.sourceUrl,
+    owner_key: normalizeOwnerKey(options.ownerKey),
+    requested_count: 1,
+    concurrency: 1,
+    queue_priority: normalizePriority(options.queuePriority),
+    queue_position: 0,
+    total_detected: 1,
+    status: "completed",
+    created_at: now,
+    updated_at: now,
+    started_at: now,
+    finished_at: now,
+    completed_count: 1,
+    success_count: 1,
+    failed_count: 0,
+    items: [item],
+    post_jobs: [],
+  };
+  tasks.set(task.id, task);
+  await persistTasks();
+  return task;
+}
+
 export async function getBatchTask(taskId: string): Promise<BatchTask | null> {
   await loadPersistedTasks();
   return tasks.get(taskId) ?? null;
@@ -173,7 +243,9 @@ export async function listBatchTasks(limit = 100): Promise<BatchTask[]> {
 export async function saveBatchTask(task: BatchTask): Promise<void> {
   await loadPersistedTasks();
   tasks.set(task.id, task);
-  await persistTasks();
+  if (!isNodeRuntime()) return;
+  persistTail = persistTail.then(persistTasks, persistTasks);
+  await persistTail;
 }
 
 export async function cancelBatchTask(taskId: string): Promise<BatchTask | null> {
@@ -359,6 +431,26 @@ function createEmptyBatchItem(awemeId: string): BatchItem {
     stats: { comment_count: null, digg_count: null, share_count: null, collect_count: null },
     ai_copy: null,
     comments: [],
+    comment_collection: emptyCommentCollectionState(),
+    error: null,
+  };
+}
+
+function emptyCommentCollectionState(): BatchCommentCollectionState {
+  return {
+    status: "idle",
+    mode: "limited",
+    requested_count: null,
+    collected_count: 0,
+    top_level_count: 0,
+    reply_count: 0,
+    next_cursor: 0,
+    has_more: true,
+    estimated_total: null,
+    pages_fetched: 0,
+    reply_pages_fetched: 0,
+    current_parent_cid: null,
+    updated_at: null,
     error: null,
   };
 }
@@ -479,6 +571,7 @@ function normalizeItem(value: unknown): BatchItem | null {
   };
   item.ai_copy = record.ai_copy && typeof record.ai_copy === "object" ? (record.ai_copy as AiCopyResult) : null;
   item.comments = Array.isArray(record.comments) ? record.comments.map(normalizeComment).filter(isPresent) : [];
+  item.comment_collection = normalizeCommentCollectionState(record.comment_collection, item.comments);
   item.error = nullableString(record.error);
   return item;
 }
@@ -490,11 +583,37 @@ function normalizeComment(value: unknown): BatchComment | null {
   if (!text) return null;
   return {
     cid: nullableString(record.cid) ?? randomId(),
+    parent_cid: nullableString(record.parent_cid),
+    level: record.level === 2 ? 2 : 1,
     nickname: nullableString(record.nickname),
+    reply_to_nickname: nullableString(record.reply_to_nickname),
     text,
     digg_count: nullableNumber(record.digg_count),
     create_time: nullableString(record.create_time),
+    reply_count: Math.max(0, Math.floor(nullableNumber(record.reply_count) ?? 0)),
   };
+}
+
+function normalizeCommentCollectionState(value: unknown, comments: BatchComment[]): BatchCommentCollectionState {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const state = emptyCommentCollectionState();
+  const status = record.status;
+  state.status = status === "idle" || status === "running" || status === "completed" || status === "failed" || status === "cancelled" ? status : "idle";
+  if (state.status === "running") state.status = "failed";
+  state.mode = record.mode === "all" ? "all" : "limited";
+  state.requested_count = nullableNumber(record.requested_count);
+  state.collected_count = Math.max(comments.length, Math.floor(nullableNumber(record.collected_count) ?? 0));
+  state.top_level_count = Math.max(0, Math.floor(nullableNumber(record.top_level_count) ?? comments.filter((comment) => comment.level === 1).length));
+  state.reply_count = Math.max(0, Math.floor(nullableNumber(record.reply_count) ?? comments.filter((comment) => comment.level === 2).length));
+  state.next_cursor = Math.max(0, Math.floor(nullableNumber(record.next_cursor) ?? 0));
+  state.has_more = typeof record.has_more === "boolean" ? record.has_more : true;
+  state.estimated_total = nullableNumber(record.estimated_total);
+  state.pages_fetched = Math.max(0, Math.floor(nullableNumber(record.pages_fetched) ?? 0));
+  state.reply_pages_fetched = Math.max(0, Math.floor(nullableNumber(record.reply_pages_fetched) ?? 0));
+  state.current_parent_cid = nullableString(record.current_parent_cid);
+  state.updated_at = nullableString(record.updated_at);
+  state.error = nullableString(record.error) ?? (value && state.status === "failed" ? "server restarted before comment collection completed" : null);
+  return state;
 }
 
 function nullableString(value: unknown): string | null {

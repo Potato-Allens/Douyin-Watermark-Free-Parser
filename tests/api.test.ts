@@ -43,6 +43,9 @@ describe("api routes", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
     const html = await response.text();
+    const publicScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(publicScript).toBeTruthy();
+    expect(() => new Function(publicScript as string)).not.toThrow();
     expect(html).toContain("抖音视频解析");
     expect(html).toContain('id="onlineCount"');
     expect(html).toContain('rel="manifest" href="/site.webmanifest"');
@@ -53,9 +56,19 @@ describe("api routes", () => {
     expect(html).toContain('id="queuePriority"');
     expect(html).toContain('id="centerDownloadBtn"');
     expect(html).toContain('id="commentsBtn"');
+    expect(html).toContain('id="commentsBtn" class="btn hidden"');
+    expect(html).toContain('id="commentWorkspace" class="comment-workspace hidden"');
+    expect(html).toContain("const COMMENTS_FEATURE_ENABLED = false");
     expect(html).toContain('id="commentsList"');
     expect(html).toContain('id="exportCurrentCommentsJsonBtn"');
     expect(html).toContain('id="exportCurrentCommentsCsvBtn"');
+    expect(html).toContain('id="collectCurrentCommentsBtn"');
+    expect(html).toContain('id="commentProgressBar"');
+    expect(html).toContain('id="commentCollectionList"');
+    expect(html).toContain('id="commentSearchInput"');
+    expect(html).toContain('id="selectAllCommentsBtn"');
+    expect(html).toContain('id="exportSelectedCommentsCsvBtn"');
+    expect(html).toContain("/api/v1/comments/collection/");
     expect(html).toContain('id="aiTranscriptBtn"');
     expect(html).toContain('id="aiTagsBtn"');
     expect(html).toContain("/api/v1/ai/transcript");
@@ -108,7 +121,7 @@ describe("api routes", () => {
     expect(html).toContain('id="centerAiBtn" class="btn hidden"');
     expect(html).toContain('id="batchAiBtn" class="btn btn-primary hidden"');
     expect(html).toContain('id="exportScriptsBtn" class="btn hidden"');
-    expect(html).toContain("解析、预览、下载和评论都围绕这条视频展开。");
+    expect(html).toContain("解析、预览和下载都围绕这条视频展开。");
     expect(html).toContain("const AI_FEATURE_ENABLED = false;");
 
     const transcript = await app.request("/api/v1/ai/transcript", {
@@ -1403,6 +1416,89 @@ describe("api routes", () => {
     expect(exportedTaskCommentsCsv.status).toBe(200);
     expect(exportedTaskCommentsCsvText).toContain("7673000000000000001");
     expect(exportedTaskCommentsCsvText).toContain("这个视频很有用");
+  });
+
+  it("collects comments incrementally, persists replies, searches, selects, and exports", async () => {
+    const store = await createMemoryVipStore(["COMMENT-FULL-1"]);
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes("/aweme/v1/web/comment/list/reply/")) {
+        return new Response(
+          JSON.stringify({
+            status_code: 0,
+            cursor: 2,
+            has_more: 0,
+            total: 2,
+            comments: [
+              { cid: "reply-full-1", text: "二级回复：支持搜索", user: { nickname: "回复甲" }, reply_to_username: "主评论用户" },
+              { cid: "reply-full-2", text: "二级回复：支持导出", user: { nickname: "回复乙" } },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.pathname.includes("/aweme/v1/web/comment/list/")) {
+        return new Response(
+          JSON.stringify({
+            status_code: 0,
+            cursor: 2,
+            has_more: 0,
+            total: 2,
+            comments: [
+              { cid: "comment-full-1", text: "主评论关键词", reply_comment_total: 2, user: { nickname: "主评论用户" } },
+              { cid: "comment-full-2", text: "另一条主评论", reply_comment_total: 0, user: { nickname: "用户乙" } },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return makeFixtureFetcher(VIDEO_HTML)();
+    };
+    const app = createApp({ fetcher, vipStore: store, cacheTtlMs: 0 });
+    const register = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ code: "COMMENT-FULL-1", username: "comment_full_user", password: "password123" }),
+    });
+    const registerBody = await register.json();
+    const headers = { authorization: `Bearer ${registerBody.data.token}`, "x-csrf-token": registerBody.data.csrf_token };
+
+    const collected = await app.request("/api/v1/comments/collect", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/", target_count: 2, include_replies: true, async: false, delay_ms: 0 }),
+    });
+    const collectedBody = await collected.json();
+    expect(collected.status).toBe(200);
+    expect(collectedBody.data.items[0]).toMatchObject({ top_level_count: 2, reply_count: 2, total_comments: 4 });
+    const taskId = collectedBody.data.task_id;
+
+    const searched = await app.request(`/api/v1/comments/collection/${taskId}?q=${encodeURIComponent("二级回复")}&limit=10`, { headers });
+    const searchedBody = await searched.json();
+    expect(searched.status).toBe(200);
+    expect(searchedBody.data.filtered_count).toBe(2);
+    expect(searchedBody.data.comments.every((comment: any) => comment.level === 2 && comment.parent_cid === "comment-full-1")).toBe(true);
+    expect(searchedBody.data.collections[0].state.collected_count).toBe(4);
+
+    const selected = await app.request(`/api/v1/comments/collection/${taskId}/export`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ type: "json", cids: ["reply-full-1"] }),
+    });
+    const selectedBody = await selected.json();
+    expect(selected.status).toBe(200);
+    expect(selectedBody.selected_count).toBe(1);
+    expect(selectedBody.items[0].comments[0].text).toContain("支持搜索");
+
+    const filteredCsv = await app.request(`/api/v1/comments/collection/${taskId}/export`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ type: "csv", select_all: true, keyword: "二级回复" }),
+    });
+    const csv = await filteredCsv.text();
+    expect(filteredCsv.status).toBe(200);
+    expect(csv).toContain("parent_comment_id,level,reply_to_nickname,reply_count");
+    expect(csv).toContain("reply-full-1");
+    expect(csv).toContain("reply-full-2");
   });
 
   it("paginates profile works so batch can start beyond the first page", async () => {

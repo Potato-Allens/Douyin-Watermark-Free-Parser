@@ -1,6 +1,6 @@
 # Douyin Watermark-Free Parser
 
-A lightweight Douyin parsing service with a Douyin-style creator workspace, normalized API, compatibility API, media preview proxy, download proxy, member activation, batch profile parsing, comment viewing/export, AI copywriting, and an admin console.
+A lightweight Douyin parsing service with a Douyin-style creator workspace, normalized API, compatibility API, media preview proxy, download proxy, member activation, batch profile parsing, optional comment collection/AI modules, and an admin console.
 
 ## Features
 
@@ -11,9 +11,8 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Metadata parsing: title, description, author, likes, comments, shares, collects, cover, and background music.
 - Real online count only; default `ONLINE_BASE_COUNT=0`.
 - Member activation-code registration, account/password login, plan permissions, queue priority, and batch privileges.
-- Profile works preview, member-isolated batch task history, persistent queue progress, and JSON/CSV/text/cover ZIP/comment export.
-- Async batch post-processing queue for batch AI copywriting and batch comment fetching for viewing/export; progress is persisted in each batch task.
-- Single-video comments view/export, plus batch-task comments view/export.
+- Profile works preview, member-isolated batch task history, persistent queue progress, and JSON/CSV/text/cover ZIP export.
+- Comment collection code and APIs are retained for later use, including incremental cursor collection, second-level replies, JSONL persistence, keyword search, selection, JSON/CSV export, per-video progress, and multi-video concurrency. The public comment UI is hidden by default with `PUBLIC_COMMENTS_FEATURES_ENABLED=false`.
 - Real speech-to-text with Xiaomi `mimo-v2.5-asr`: the Node service extracts MP3 audio with FFmpeg, sends it as `input_audio`, and forwards the recognized transcript into Xiaomi/OpenAI-compatible rewriting, title, description, and tag generation. When ASR is disabled the API explicitly reports a degraded metadata draft.
 - Admin console `/admin` with a server-gated login entry, HttpOnly cookie session, password + Google Authenticator/TOTP self-service setup, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
 - Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
@@ -150,6 +149,9 @@ GET  /api/v1/batch/:id/comments/export?type=json|csv
 POST /api/v1/batch/:id/comments/import
 POST /api/v1/batch/:id/comments/fetch
 POST /api/v1/batch/:id/comments/collect   # compatibility alias for /comments/fetch
+POST /api/v1/comments/collect
+GET  /api/v1/comments/collection/:id?aweme_id=<id>&q=<keyword>&offset=0&limit=100
+POST /api/v1/comments/collection/:id/export
 POST /api/v1/ai/transcript
 POST /api/v1/ai/script
 POST /api/v1/ai/rewrite
@@ -157,7 +159,7 @@ POST /api/v1/ai/tags
 POST /api/v1/ai/batch
 ```
 
-For batch AI and batch comment fetching, pass `"async": true` to queue the operation and poll `GET /api/v1/batch/:id` or `GET /api/v1/batch/:id/jobs` for `post_jobs` progress. Comments are not posted; they are read into the task cache for viewing and JSON/CSV export.
+The comment APIs are backend-ready but not shown in the public workbench by default. They only read comments and never post replies. Pass `"async": true` to queue collection and poll the collection/task endpoint for persisted progress.
 
 Registration example:
 
@@ -244,8 +246,13 @@ Open `/admin` → **AI 模型** and configure:
 | `BATCH_QUEUE_PRESSURE_ONLINE` | `5` | Online users threshold where batch resources start to shrink |
 | `BATCH_QUEUE_PRESSURE_STEP` | `5` | More online users per additional resource pressure level |
 | `PUBLIC_AI_FEATURES_ENABLED` | `true` | Set to `false` to hide the public AI/ASR controls and return 404 from public AI endpoints while keeping the implementation available |
+| `PUBLIC_COMMENTS_FEATURES_ENABLED` | `false` | Set to `true` only when the dormant public comment collection/view/export UI should be shown |
 | `AI_RATE_LIMIT_PER_DAY` | `1000` | Global AI call ceiling per user |
 | `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comment fetch/export ceiling per user |
+| `COMMENT_STORE_DIR` | `.data/comments` | JSONL directory for persisted incremental comments |
+| `COMMENTS_MAX_TOP_LEVEL_PER_JOB` | `50000` | Maximum top-level comments requested by one collection job |
+| `COMMENTS_TASK_CACHE_LIMIT` | `200` | Small per-item in-task comment cache; complete data remains in JSONL |
+| `COMMENTS_PAGE_DELAY_MS` | `250` | Delay between upstream comment pages |
 | `POST_JOB_MAX_ACTIVE` | `2` | Max concurrent async batch AI/comment post-processing jobs |
 | `ASR_MAX_CONCURRENCY` | `1` | Max active video-to-ASR jobs per Node process |
 | `ASR_MAX_QUEUE` | `20` | Max waiting ASR requests before returning 503 |
@@ -256,6 +263,7 @@ Open `/admin` → **AI 模型** and configure:
 | `FFMPEG_TIMEOUT_MS` | `120000` | Audio extraction timeout |
 | `DOUYIN_COMMENTS_BROWSER` | `1` | Enable the Node Chromium fallback when Douyin returns an empty direct comment response; set `0` to disable |
 | `DOUYIN_CHROMIUM_PATH` | auto-detect | Optional absolute Chromium/Chrome executable path used by real comment viewing/export |
+| `DOUYIN_COOKIE` | empty | Optional Douyin browser cookie header for deeper reply pages; keep it server-side only |
 
 ## Deployment
 

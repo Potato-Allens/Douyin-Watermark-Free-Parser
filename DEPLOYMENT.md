@@ -33,8 +33,13 @@ BATCH_MAX_GLOBAL_CONCURRENCY=4
 BATCH_QUEUE_PRESSURE_ONLINE=5
 BATCH_QUEUE_PRESSURE_STEP=5
 PUBLIC_AI_FEATURES_ENABLED=false
+PUBLIC_COMMENTS_FEATURES_ENABLED=false
 AI_RATE_LIMIT_PER_DAY=1000
 COMMENTS_RATE_LIMIT_PER_DAY=200
+COMMENT_STORE_DIR=/app/.data/comments
+COMMENTS_MAX_TOP_LEVEL_PER_JOB=50000
+COMMENTS_TASK_CACHE_LIMIT=200
+COMMENTS_PAGE_DELAY_MS=250
 DOUYIN_COMMENTS_BROWSER=1
 DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
 ADMIN_LOGIN_MAX_FAILURES=5
@@ -58,6 +63,8 @@ sudo apt-get update
 sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
 command -v chromium-browser || command -v chromium
 ```
+
+The comment backend is retained but its public workbench controls are hidden by default. Keep `PUBLIC_COMMENTS_FEATURES_ENABLED=false`; set it to `true` only when the feature is ready to reopen. Optional deeper reply pagination can use a server-side `DOUYIN_COOKIE`; never expose that cookie to browser JavaScript or commit it to Git.
 
 Real mouth-script recognition requires FFmpeg. The service downloads the parsed video, extracts a 16 kHz mono MP3, and calls Xiaomi `mimo-v2.5-asr`. Install and verify it before enabling ASR in `/admin`:
 

@@ -4,15 +4,21 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import QRCode from "qrcode";
 import {
   DouyinServiceError,
+  appendStoredComments,
   cancelBatchTask,
+  collectDouyinComments,
+  countStoredComments,
+  createCommentCollectionTask,
   createTranscriptDraft,
   fetchDouyinComments,
   generateAiCopy,
   getBatchQueueSnapshot,
   getBatchTask,
   getCreatorStore,
+  getAllStoredComments,
   getVipStore,
   inspectBatchHomepage,
+  listStoredComments,
   listBatchTasks,
   makeLocalAiCopy,
   makeErrorResponse,
@@ -41,6 +47,7 @@ export interface CreateAppOptions {
   onlineBaseCount?: number;
   onlineTtlMs?: number;
   publicAiFeaturesEnabled?: boolean;
+  publicCommentsFeaturesEnabled?: boolean;
 }
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -79,6 +86,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const onlineBaseCount = options.onlineBaseCount ?? parsePositiveInt(getRuntimeEnv().ONLINE_BASE_COUNT, 0);
   const publicAiFeaturesEnabled =
     options.publicAiFeaturesEnabled ?? (getRuntimeEnv().PUBLIC_AI_FEATURES_ENABLED?.trim().toLowerCase() !== "false");
+  const publicCommentsFeaturesEnabled =
+    options.publicCommentsFeaturesEnabled ?? getRuntimeEnv().PUBLIC_COMMENTS_FEATURES_ENABLED?.trim().toLowerCase() === "true";
   const creatorStorePromise = options.creatorStore ? Promise.resolve(options.creatorStore) : getCreatorStore();
   const videoTranscriber = options.transcriber ?? transcribeDouyinVideo;
   const adminSessions = new Map<string, number>();
@@ -429,7 +438,14 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/", async (c) => {
     const requestUrl = new URL(c.req.url);
-    if (!requestUrl.searchParams.has("url")) return c.html(renderHomePage({ aiFeaturesEnabled: publicAiFeaturesEnabled }));
+    if (!requestUrl.searchParams.has("url")) {
+      return c.html(
+        renderHomePage({
+          aiFeaturesEnabled: publicAiFeaturesEnabled,
+          commentsFeaturesEnabled: publicCommentsFeaturesEnabled,
+        }),
+      );
+    }
     return handleCompat(c.req.url, parseForRequest, {
       before: async () => {
         await guardPublicAccess(c, "compat_parse");
@@ -1042,7 +1058,15 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       assertBatchTaskAccess(task, session);
       const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
-      return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })) }));
+      const storedItems = await Promise.all(
+        items.map(async (item) => ({
+          aweme_id: item.aweme_id,
+          title: item.title,
+          collection: item.comment_collection,
+          comments: await loadStoredItemComments(task.id, item),
+        })),
+      );
+      return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: storedItems }));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -1067,20 +1091,108 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       assertBatchTaskAccess(task, session);
       const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
-      const exportedCount = items.reduce((total, item) => total + item.comments.length, 0);
+      const storedItems = await Promise.all(items.map(async (item) => ({ aweme_id: item.aweme_id, title: item.title, comments: await loadStoredItemComments(task.id, item) })));
+      const exportedCount = storedItems.reduce((total, item) => total + item.comments.length, 0);
       await store.recordUsage({ kind: "batch_comments_export", user_key: session.code, ip: getClientIp(c), path: new URL(c.req.url).pathname, status: 200, detail: JSON.stringify({ task_id: task.id, aweme_id: awemeId ?? null, count: exportedCount, type }) });
       return commentsExportResponse(
         {
           task_id: task.id,
           homepage_url: task.homepage_url,
           aweme_id: awemeId ?? null,
-          items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })),
+          items: storedItems,
         },
         type,
         `comments-${task.id}`,
       );
     } catch (error) {
       await store.recordUsage({ kind: "batch_comments_export", user_key: sessionKey, ip: getClientIp(c), path: new URL(c.req.url).pathname, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      return jsonError(c, error);
+    }
+  });
+
+  app.get("/api/v1/comments/collection/:id", async (c) => {
+    try {
+      await guardPublicAccess(c, "comments_collection_view");
+      const session = await requireVip(c, await getStore());
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment view/export", 403);
+      }
+      const task = await getBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "comment collection task not found", 404);
+      assertBatchTaskAccess(task, session);
+      const requestUrl = new URL(c.req.url);
+      const awemeId = requestUrl.searchParams.get("aweme_id");
+      const keyword = requestUrl.searchParams.get("q") ?? requestUrl.searchParams.get("keyword");
+      const offset = parseNonNegativeInt(requestUrl.searchParams.get("offset"), 0);
+      const limit = Math.min(parsePositiveInt(requestUrl.searchParams.get("limit"), 100), 500);
+      const scopedItems = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
+      for (const item of scopedItems) await seedStoredItemComments(task.id, item);
+      const page = await listStoredComments(task.id, { awemeId, keyword, offset, limit });
+      const titleByAweme = new Map(task.items.map((item) => [item.aweme_id, item.title]));
+      const latestJob = [...(task.post_jobs ?? [])].reverse().find((job) => job.type === "comments") ?? null;
+      return c.json(
+        success({
+          task_id: task.id,
+          aweme_id: awemeId,
+          keyword: keyword?.trim() || null,
+          ...page,
+          comments: page.comments.map((comment) => ({ ...comment, video_title: titleByAweme.get(comment.aweme_id) ?? null })),
+          collections: scopedItems.map((item) => ({ aweme_id: item.aweme_id, title: item.title, state: item.comment_collection })),
+          job: latestJob,
+        }),
+      );
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/comments/collection/:id/export", async (c) => {
+    const store = await creatorStorePromise;
+    let sessionKey = "unknown";
+    try {
+      await guardPublicAccess(c, "comments_collection_export");
+      const session = await requireVip(c, await getStore(), { mutation: true });
+      sessionKey = session.code;
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment view/export", 403);
+      }
+      const task = await getBatchTask(c.req.param("id"));
+      if (!task) throw new DouyinServiceError("PARSE_FAILED", "comment collection task not found", 404);
+      assertBatchTaskAccess(task, session);
+      const body = await readJsonBody(c);
+      const type = asString(body.type) === "csv" ? "csv" : "json";
+      const awemeId = asString(body.aweme_id);
+      const keyword = asString(body.keyword) ?? asString(body.q);
+      const selectAll = body.select_all === true || body.select_all === "true";
+      const cids = new Set(
+        (Array.isArray(body.cids) ? body.cids : [])
+          .map((value) => (typeof value === "string" || typeof value === "number" ? String(value).trim() : ""))
+          .filter(Boolean),
+      );
+      if (!selectAll && cids.size === 0) throw new DouyinServiceError("MISSING_URL", "select at least one comment or enable select_all", 400);
+      const scopedItems = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
+      for (const item of scopedItems) await seedStoredItemComments(task.id, item);
+      const selected = await getAllStoredComments(task.id, { awemeId, keyword: selectAll ? keyword : null, cids: selectAll ? null : cids });
+      const items = scopedItems.map((item) => ({
+        aweme_id: item.aweme_id,
+        title: item.title,
+        comments: selected.filter((comment) => comment.aweme_id === item.aweme_id),
+      }));
+      await store.recordUsage({
+        kind: "comments_selection_export",
+        user_key: session.code,
+        ip: getClientIp(c),
+        path: new URL(c.req.url).pathname,
+        status: 200,
+        detail: JSON.stringify({ task_id: task.id, aweme_id: awemeId, keyword, select_all: selectAll, count: selected.length, type }),
+      });
+      return commentsExportResponse(
+        { task_id: task.id, aweme_id: awemeId, keyword: keyword ?? null, selected_count: selected.length, items },
+        type,
+        `comments-selected-${task.id}`,
+      );
+    } catch (error) {
+      await store.recordUsage({ kind: "comments_selection_export", user_key: sessionKey, ip: getClientIp(c), path: new URL(c.req.url).pathname, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
@@ -1109,6 +1221,11 @@ export function createApp(options: CreateAppOptions = {}) {
           imported += 1;
         }
         item.comments = [...merged.values()];
+        await appendStoredComments(task.id, item.aweme_id, payload.comments);
+        item.comment_collection.collected_count = await countStoredComments(task.id, item.aweme_id);
+        item.comment_collection.top_level_count = item.comments.filter((comment) => comment.level === 1).length;
+        item.comment_collection.reply_count = item.comments.filter((comment) => comment.level === 2).length;
+        item.comment_collection.updated_at = new Date().toISOString();
       }
       await saveBatchTask(task);
       return c.json(success({ task_id: task.id, imported_count: imported, items: task.items.map((item) => ({ aweme_id: item.aweme_id, comment_count: item.comments.length })) }));
@@ -1241,7 +1358,10 @@ export function createApp(options: CreateAppOptions = {}) {
         if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
         assertBatchTaskAccess(task, session);
         const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
-        return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })) }));
+        const storedItems = await Promise.all(
+          items.map(async (item) => ({ aweme_id: item.aweme_id, title: item.title, collection: item.comment_collection, comments: await loadStoredItemComments(task.id, item) })),
+        );
+        return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: storedItems }));
       }
       if (isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含评论查看/导出", 403);
@@ -1287,14 +1407,15 @@ export function createApp(options: CreateAppOptions = {}) {
         if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
         assertBatchTaskAccess(task, session);
         const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
-        const exportedCount = items.reduce((total, item) => total + item.comments.length, 0);
+        const storedItems = await Promise.all(items.map(async (item) => ({ aweme_id: item.aweme_id, title: item.title, comments: await loadStoredItemComments(task.id, item) })));
+        const exportedCount = storedItems.reduce((total, item) => total + item.comments.length, 0);
         await store.recordUsage({ kind: "comments_export", user_key: session.code, ip: getClientIp(c), path: "/api/v1/comments/export", status: 200, detail: JSON.stringify({ task_id: task.id, aweme_id: awemeId ?? null, count: exportedCount, type }) });
         return commentsExportResponse(
           {
             task_id: task.id,
             homepage_url: task.homepage_url,
             aweme_id: awemeId ?? null,
-            items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })),
+            items: storedItems,
           },
           type,
           `comments-${task.id}`,
@@ -1781,7 +1902,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  const handleBatchCommentsFetch = async (c: Context) => {
+  const handleBatchCommentsFetch = async (c: Context, taskIdOverride?: string, bodyOverride?: Record<string, unknown>) => {
     const store = await creatorStorePromise;
     try {
       const routePath = new URL(c.req.url).pathname;
@@ -1790,32 +1911,128 @@ export function createApp(options: CreateAppOptions = {}) {
       if (isMemberSession(session) && !session.plan.comment_export) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment view/export", 403);
       }
-      const taskId = c.req.param("id") ?? "";
+      const taskId = taskIdOverride ?? c.req.param("id") ?? "";
       if (!taskId) throw new DouyinServiceError("MISSING_URL", "batch task id is required", 400);
       const task = await getBatchTask(taskId);
       if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
       assertBatchTaskAccess(task, session);
-      const body = await readJsonBody(c);
+      const body = bodyOverride ?? (await readJsonBody(c));
       const asyncMode = body.async === true || body.async === "true";
-      const countPerVideo = Math.min(parsePositiveInt(body.count_per_video ?? body.count, 20), 100);
+      const mode = body.all === true || body.all === "true" || body.mode === "all" ? "all" : "limited";
+      const maxTopLevelPerVideo = Math.min(parsePositiveInt(getRuntimeEnv().COMMENTS_MAX_TOP_LEVEL_PER_JOB, 50_000), 100_000);
+      const requestedTopLevelCount = Math.min(parsePositiveInt(body.target_count ?? body.count ?? body.count_per_video, 100), maxTopLevelPerVideo);
+      const legacyIncrement = body.target_count === undefined && body.count === undefined && body.count_per_video !== undefined;
+      const pageSize = Math.min(parsePositiveInt(body.page_size, 20), 100);
+      const replyPageSize = Math.min(parsePositiveInt(body.reply_page_size, 20), 100);
+      const includeReplies = body.include_replies !== false && body.include_replies !== "false";
+      const delayMs = Math.min(parseNonNegativeInt(body.delay_ms, parsePositiveInt(getRuntimeEnv().COMMENTS_PAGE_DELAY_MS, 250)), 10_000);
       const requestedIds = readAwemeIdSet(body.aweme_ids);
       const maxItems = Math.min(parsePositiveInt(body.video_count, task.items.length), task.items.length, getBatchParseLimit(session));
       const items = task.items.filter((item) => requestedIds.size === 0 || requestedIds.has(item.aweme_id)).slice(0, maxItems);
+      const resourceLimits = adaptiveBatchResourceLimits();
+      const commentConcurrency = Math.max(
+        1,
+        Math.min(parsePositiveInt(body.concurrency, getConcurrencyLimit(session)), getConcurrencyLimit(session), resourceLimits.max_global_concurrency, Math.max(1, items.length)),
+      );
       await enforceMemberRateLimit("batch_comments", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000, Math.max(1, items.length));
       const runCommentsJob = async (job?: BatchPostJob) => {
         let collectedCount = 0;
-        const results = [];
-        for (const item of items) {
-          if (job?.status === "cancelled") break;
+        const results: Array<Record<string, unknown> | undefined> = new Array(items.length);
+        const processItem = async (item: BatchItem, itemIndex: number) => {
+          if (job?.status === "cancelled") return;
+          const collection = item.comment_collection;
           try {
-            const fetched = await fetchDouyinComments(item.aweme_id, { ...parserOptions, count: countPerVideo });
-            item.comments = mergeComments(item.comments, fetched.comments);
-            collectedCount += fetched.comments.length;
-            results.push({ aweme_id: item.aweme_id, title: item.title, collected_count: fetched.comments.length, total_comments: item.comments.length, next_cursor: fetched.next_cursor, has_more: fetched.has_more, error: null });
+            const existing = await loadStoredItemComments(task.id, item);
+            const existingTopLevel = existing.filter((comment) => comment.level === 1).length;
+            const targetTopLevelCount = mode === "all" ? maxTopLevelPerVideo : Math.min(maxTopLevelPerVideo, legacyIncrement ? existingTopLevel + requestedTopLevelCount : requestedTopLevelCount);
+            collection.status = "running";
+            collection.mode = mode;
+            collection.requested_count = mode === "all" ? null : targetTopLevelCount;
+            collection.collected_count = existing.length;
+            collection.top_level_count = existingTopLevel;
+            collection.reply_count = existing.filter((comment) => comment.level === 2).length;
+            collection.current_parent_cid = null;
+            collection.error = null;
+            collection.updated_at = new Date().toISOString();
+            await saveBatchTask(task);
+
+            const result = await collectDouyinComments(item.aweme_id, {
+              ...parserOptions,
+              mode,
+              targetTopLevelCount,
+              startCursor: collection.next_cursor,
+              startHasMore: collection.pages_fetched === 0 ? true : collection.has_more,
+              pageSize,
+              replyPageSize,
+              delayMs,
+              includeReplies,
+              initialComments: existing,
+              shouldStop: () => job?.status === "cancelled",
+              onProgress: async (progress, added) => {
+                if (added.length > 0) {
+                  await appendStoredComments(task.id, item.aweme_id, added);
+                  item.comments = mergeComments(item.comments, added).slice(-getCommentCacheLimit());
+                }
+                collection.collected_count = progress.collected_count;
+                collection.top_level_count = progress.top_level_count;
+                collection.reply_count = progress.reply_count;
+                collection.next_cursor = progress.next_cursor;
+                collection.has_more = progress.has_more;
+                collection.estimated_total = progress.estimated_total;
+                collection.pages_fetched = progress.pages_fetched;
+                collection.reply_pages_fetched = progress.reply_pages_fetched;
+                collection.current_parent_cid = progress.current_parent_cid;
+                collection.updated_at = new Date().toISOString();
+                if (job) {
+                  job.detail = {
+                    ...job.detail,
+                    current_aweme_id: item.aweme_id,
+                    mode,
+                    target_top_level_count: mode === "all" ? null : targetTopLevelCount,
+                    max_top_level_count: maxTopLevelPerVideo,
+                    include_replies: includeReplies,
+                    progress,
+                  };
+                  job.updated_at = collection.updated_at;
+                }
+                await saveBatchTask(task);
+              },
+            });
+            const newlyCollected = Math.max(0, result.comments.length - existing.length);
+            collectedCount += newlyCollected;
+            collection.status = result.stopped_reason === "cancelled" ? "cancelled" : "completed";
+            collection.collected_count = result.collected_count;
+            collection.top_level_count = result.top_level_count;
+            collection.reply_count = result.reply_count;
+            collection.next_cursor = result.next_cursor;
+            collection.has_more = result.has_more;
+            collection.estimated_total = result.estimated_total;
+            collection.pages_fetched = result.pages_fetched;
+            collection.reply_pages_fetched = result.reply_pages_fetched;
+            collection.current_parent_cid = null;
+            collection.updated_at = new Date().toISOString();
+            results[itemIndex] = {
+              aweme_id: item.aweme_id,
+              title: item.title,
+              mode,
+              requested_top_level_count: mode === "all" ? null : targetTopLevelCount,
+              collected_count: newlyCollected,
+              total_comments: result.collected_count,
+              top_level_count: result.top_level_count,
+              reply_count: result.reply_count,
+              next_cursor: result.next_cursor,
+              has_more: result.has_more,
+              stopped_reason: result.stopped_reason,
+              reply_errors: result.reply_errors,
+              error: null,
+            };
             if (job) job.success_count += 1;
           } catch (error) {
+            collection.status = "failed";
+            collection.error = error instanceof Error ? error.message : String(error);
+            collection.updated_at = new Date().toISOString();
             if (job) job.failed_count += 1;
-            results.push({ aweme_id: item.aweme_id, title: item.title, collected_count: 0, total_comments: item.comments.length, next_cursor: null, has_more: false, error: error instanceof Error ? error.message : String(error) });
+            results[itemIndex] = { aweme_id: item.aweme_id, title: item.title, collected_count: 0, total_comments: collection.collected_count, next_cursor: collection.next_cursor, has_more: collection.has_more, error: collection.error };
           } finally {
             if (job) {
               job.completed_count = job.success_count + job.failed_count;
@@ -1823,7 +2040,16 @@ export function createApp(options: CreateAppOptions = {}) {
               await saveBatchTask(task);
             }
           }
-        }
+        };
+        let nextItemIndex = 0;
+        const workers = Array.from({ length: commentConcurrency }, async () => {
+          while (nextItemIndex < items.length && job?.status !== "cancelled") {
+            const itemIndex = nextItemIndex++;
+            const item = items[itemIndex];
+            if (item) await processItem(item, itemIndex);
+          }
+        });
+        await Promise.all(workers);
         if (job) {
           if (job.status !== "cancelled") {
             job.status = job.failed_count === job.requested_count ? "failed" : "completed";
@@ -1832,11 +2058,20 @@ export function createApp(options: CreateAppOptions = {}) {
           }
         }
         await saveBatchTask(task);
-        return { collectedCount, results };
+        return { collectedCount, results: results.filter(isPresent) };
       };
 
       if (asyncMode) {
-        const job = createBatchPostJob("comments", items.length, permissionsForSession(session).queue_priority, { count_per_video: countPerVideo, video_count: items.length });
+        const job = createBatchPostJob("comments", items.length, permissionsForSession(session).queue_priority, {
+          mode,
+          target_top_level_count: mode === "all" ? null : requestedTopLevelCount,
+          max_top_level_count: maxTopLevelPerVideo,
+          video_count: items.length,
+          page_size: pageSize,
+          reply_page_size: replyPageSize,
+          include_replies: includeReplies,
+          concurrency: commentConcurrency,
+        });
         await enqueuePostJob(task, job, async (runningJob) => {
           const data = await runCommentsJob(runningJob);
           await store.recordUsage({ kind: "batch_comments_fetch_async_done", user_key: session.code, ip: getClientIp(c), path: routePath, status: 200, detail: JSON.stringify({ job_id: runningJob.id, video_count: items.length, fetched_count: data.collectedCount }) });
@@ -1861,6 +2096,39 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/api/v1/batch/:id/comments/collect", async (c) => {
     return handleBatchCommentsFetch(c);
+  });
+
+  app.post("/api/v1/comments/collect", async (c) => {
+    try {
+      await guardPublicAccess(c, "comments_collect");
+      const session = await requireVip(c, await getStore(), { mutation: true });
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment view/export", 403);
+      }
+      const body = await readJsonBody(c);
+      const existingTaskId = asString(body.task_id);
+      let task: BatchTask | null = existingTaskId ? await getBatchTask(existingTaskId) : null;
+      if (existingTaskId && !task) throw new DouyinServiceError("PARSE_FAILED", "comment collection task not found", 404);
+      if (task) assertBatchTaskAccess(task, session);
+      if (!task) {
+        const inputUrl = asString(body.url);
+        const awemeId = asString(body.aweme_id);
+        const sourceUrl = inputUrl ?? (awemeId ? `https://www.douyin.com/video/${awemeId}` : null);
+        if (!sourceUrl) throw new DouyinServiceError("MISSING_URL", "url or aweme_id is required", 400);
+        const parsed = await parseForRequest(sourceUrl);
+        const publicRequestUrl = getPublicRequestUrl(c);
+        task = await createCommentCollectionTask({
+          parsed,
+          sourceUrl,
+          makeDownloadUrl: (value) => decorateParsedInfo(value, publicRequestUrl).download.download_url,
+          ownerKey: session.code,
+          queuePriority: permissionsForSession(session).queue_priority,
+        });
+      }
+      return await handleBatchCommentsFetch(c, task.id, { ...body, async: body.async !== false && body.async !== "false", video_count: 1 });
+    } catch (error) {
+      return jsonError(c, error);
+    }
   });
 
   app.get("/api/admin/usage/summary", async (c) => {
@@ -2418,10 +2686,14 @@ function normalizeCommentInput(value: unknown): BatchComment | null {
   if (!text) return null;
   return {
     cid: asString(record.cid) ?? randomId(),
+    parent_cid: asString(record.parent_cid),
+    level: record.level === 2 ? 2 : 1,
     nickname: asString(record.nickname),
+    reply_to_nickname: asString(record.reply_to_nickname),
     text,
     digg_count: typeof record.digg_count === "number" && Number.isFinite(record.digg_count) ? record.digg_count : null,
     create_time: asString(record.create_time),
+    reply_count: Math.max(0, Math.floor(typeof record.reply_count === "number" && Number.isFinite(record.reply_count) ? record.reply_count : 0)),
   };
 }
 
@@ -2552,19 +2824,21 @@ async function batchExportResponse(task: BatchTask, type: string, fetcher?: Fetc
     return await coverZipAttachment(task, timestamp, fetcher);
   }
   if (type === "comments") {
+    const items = await Promise.all(task.items.map(async (item) => ({ aweme_id: item.aweme_id, title: item.title, comments: await loadStoredItemComments(task.id, item) })));
     return jsonAttachment(
       {
         task_id: task.id,
         homepage_url: task.homepage_url,
         note: "comments are exported from the task comment cache; use the comment fetch/view endpoint first when arrays are empty",
-        comments: task.items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })),
+        comments: items,
       },
       `batch-${task.id}-comments-${timestamp}.json`,
     );
   }
   if (type === "comments_csv") {
-    const rows = task.items.flatMap((item) =>
-      item.comments.map((comment) => [
+    const storedItems = await Promise.all(task.items.map(async (item) => ({ item, comments: await loadStoredItemComments(task.id, item) })));
+    const rows = storedItems.flatMap(({ item, comments }) =>
+      comments.map((comment) => [
         item.aweme_id,
         item.title,
         comment.cid,
@@ -2572,9 +2846,16 @@ async function batchExportResponse(task: BatchTask, type: string, fetcher?: Fetc
         comment.text,
         comment.digg_count,
         comment.create_time,
+        comment.parent_cid,
+        comment.level,
+        comment.reply_to_nickname,
+        comment.reply_count,
       ]),
     );
-    return csvAttachment([["aweme_id", "video_title", "comment_id", "nickname", "text", "digg_count", "create_time"], ...rows], `batch-${task.id}-comments-${timestamp}.csv`);
+    return csvAttachment(
+      [["aweme_id", "video_title", "comment_id", "nickname", "text", "digg_count", "create_time", "parent_comment_id", "level", "reply_to_nickname", "reply_count"], ...rows],
+      `batch-${task.id}-comments-${timestamp}.csv`,
+    );
   }
   return jsonAttachment(
     {
@@ -2633,16 +2914,18 @@ function commentsExportResponse(value: any, type: "json" | "csv", filenamePrefix
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const safePrefix = sanitizeFilePart(filenamePrefix || "comments");
   if (type === "csv") {
-    const rows: Array<Array<string | number | null | undefined>> = [["aweme_id", "video_title", "comment_id", "nickname", "text", "digg_count", "create_time"]];
+    const rows: Array<Array<string | number | null | undefined>> = [
+      ["aweme_id", "video_title", "comment_id", "nickname", "text", "digg_count", "create_time", "parent_comment_id", "level", "reply_to_nickname", "reply_count"],
+    ];
     if (Array.isArray(value.items)) {
       for (const item of value.items) {
         for (const comment of Array.isArray(item.comments) ? item.comments : []) {
-          rows.push([item.aweme_id, item.title, comment.cid, comment.nickname, comment.text, comment.digg_count, comment.create_time]);
+          rows.push([item.aweme_id, item.title, comment.cid, comment.nickname, comment.text, comment.digg_count, comment.create_time, comment.parent_cid, comment.level, comment.reply_to_nickname, comment.reply_count]);
         }
       }
     } else {
       for (const comment of Array.isArray(value.comments) ? value.comments : []) {
-        rows.push([value.aweme_id, null, comment.cid, comment.nickname, comment.text, comment.digg_count, comment.create_time]);
+        rows.push([value.aweme_id, null, comment.cid, comment.nickname, comment.text, comment.digg_count, comment.create_time, comment.parent_cid, comment.level, comment.reply_to_nickname, comment.reply_count]);
       }
     }
     return csvAttachment(rows, `${safePrefix}-${timestamp}.csv`);
@@ -2909,6 +3192,19 @@ function clearVipCookie(requestUrl: string): string {
 function buildAdminCookie(token: string, maxAge: number, requestUrl: string): string {
   const secure = new URL(requestUrl).protocol === "https:" ? "; Secure" : "";
   return `admin_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+}
+
+async function seedStoredItemComments(taskId: string, item: BatchItem): Promise<void> {
+  if (item.comments.length > 0) await appendStoredComments(taskId, item.aweme_id, item.comments);
+}
+
+async function loadStoredItemComments(taskId: string, item: BatchItem): Promise<BatchComment[]> {
+  await seedStoredItemComments(taskId, item);
+  return await getAllStoredComments(taskId, { awemeId: item.aweme_id });
+}
+
+function getCommentCacheLimit(): number {
+  return Math.min(parsePositiveInt(getRuntimeEnv().COMMENTS_TASK_CACHE_LIMIT, 200), 2_000);
 }
 
 function clearAdminCookie(requestUrl: string): string {
