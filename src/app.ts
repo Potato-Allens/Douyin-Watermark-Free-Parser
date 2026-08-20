@@ -20,10 +20,12 @@ import {
   proxyMediaUrl,
   saveBatchTask,
   startBatchTask,
+  testMimoAsrSettings,
   testLlmSettings,
+  transcribeDouyinVideo,
   toServiceError,
 } from "./core/index.ts";
-import type { ApiSuccessResponse, BatchComment, BatchItem, BatchPostJob, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, SecuritySettings, UsageLogEntry, VipSession, VipStore } from "./core/index.ts";
+import type { ApiSuccessResponse, BatchComment, BatchItem, BatchPostJob, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, SecuritySettings, UsageLogEntry, VideoTranscriber, VipSession, VipStore } from "./core/index.ts";
 import { renderAdminLoginPage } from "./admin-login-ui.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import { renderDesignsPage } from "./designs-ui.ts";
@@ -35,6 +37,7 @@ export interface CreateAppOptions {
   cacheTtlMs?: number;
   vipStore?: VipStore;
   creatorStore?: CreatorStore;
+  transcriber?: VideoTranscriber;
   onlineBaseCount?: number;
   onlineTtlMs?: number;
 }
@@ -74,6 +77,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const onlineTtlMs = options.onlineTtlMs ?? 45_000;
   const onlineBaseCount = options.onlineBaseCount ?? parsePositiveInt(getRuntimeEnv().ONLINE_BASE_COUNT, 0);
   const creatorStorePromise = options.creatorStore ? Promise.resolve(options.creatorStore) : getCreatorStore();
+  const videoTranscriber = options.transcriber ?? transcribeDouyinVideo;
   const adminSessions = new Map<string, number>();
   const adminLoginFailures = new Map<string, { count: number; resetAt: number; lockedUntil: number }>();
   const rateBuckets = new Map<string, { resetAt: number; count: number }>();
@@ -99,6 +103,15 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch {
       // Usage logging must never break the user-facing parsing flow.
     }
+  };
+
+  const runConfiguredAsr = async (parsed: ParsedDouyinInfo, store: CreatorStore) => {
+    const settings = await store.getLlmSettings();
+    if (!settings.asr_enabled) return null;
+    const apiKey = await store.getRawApiKey();
+    if (!apiKey) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "语音识别已启用，但后台尚未配置小米 API Key", 503);
+    if (!settings.asr_model) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "语音识别模型未配置", 503);
+    return await videoTranscriber({ parsed, settings, apiKey, fetcher: parserOptions.fetcher });
   };
 
   const recordRateLimitBlock = async (input: { kind: string; userKey?: string; ip: string; path: string; limit: number; windowMs: number; cost: number }) => {
@@ -845,6 +858,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const prompt = asString(body.prompt);
       const mode = asString(body.mode) ?? "batch_script";
       const asyncMode = body.async === true || body.async === "true";
+      const transcribeAudio = body.transcribe !== false && body.transcribe !== "false";
       const limit = Math.min(parsePositiveInt(body.count, task.items.length), getBatchAiLimit(session));
       const items = task.items.filter((item) => item.status === "success").slice(0, limit);
       if (items.length === 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "batch task has no successful video item for AI copywriting", 409);
@@ -859,9 +873,10 @@ export function createApp(options: CreateAppOptions = {}) {
           if (job?.status === "cancelled") break;
           try {
             const parsed = parsedFromBatchItem(task, item);
-            const ai = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
+            const speech = transcribeAudio ? await runConfiguredAsr(parsed, store) : null;
+            const ai = await generateAiCopy({ parsed, prompt, mode, sourceTranscript: speech?.transcript, store, fetcher: parserOptions.fetcher });
             item.ai_copy = ai;
-            results.push({ aweme_id: item.aweme_id, title: item.title, ai_copy: ai });
+            results.push({ aweme_id: item.aweme_id, title: item.title, transcript_provider: speech?.provider ?? "metadata_draft", ai_copy: ai });
             if (job) job.success_count += 1;
           } catch (error) {
             if (job) job.failed_count += 1;
@@ -886,7 +901,7 @@ export function createApp(options: CreateAppOptions = {}) {
       };
 
       if (asyncMode) {
-        const job = createBatchPostJob("ai", items.length, permissionsForSession(session).queue_priority, { mode, prompt: prompt ?? null });
+        const job = createBatchPostJob("ai", items.length, permissionsForSession(session).queue_priority, { mode, prompt: prompt ?? null, transcribe: transcribeAudio });
         await enqueuePostJob(task, job, async (runningJob) => {
           const results = await runAiJob(runningJob);
           await store.recordUsage({ kind: `batch_ai_${mode}_async_done`, user_key: session.code, ip: getClientIp(c), path: `/api/v1/batch/${task.id}/ai`, status: 200, detail: JSON.stringify({ job_id: runningJob.id, count: results.length }) });
@@ -922,6 +937,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const prompt = asString(body.prompt);
       const mode = asString(body.mode) ?? "batch_script";
       const asyncMode = body.async === true || body.async === "true";
+      const transcribeAudio = body.transcribe !== false && body.transcribe !== "false";
       const limit = Math.min(parsePositiveInt(body.count, task.items.length), getBatchAiLimit(session));
       const items = task.items.filter((item) => item.status === "success").slice(0, limit);
       if (items.length === 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "batch task has no successful video item for AI copywriting", 409);
@@ -936,9 +952,10 @@ export function createApp(options: CreateAppOptions = {}) {
           if (job?.status === "cancelled") break;
           try {
             const parsed = parsedFromBatchItem(task, item);
-            const ai = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
+            const speech = transcribeAudio ? await runConfiguredAsr(parsed, store) : null;
+            const ai = await generateAiCopy({ parsed, prompt, mode, sourceTranscript: speech?.transcript, store, fetcher: parserOptions.fetcher });
             item.ai_copy = ai;
-            results.push({ aweme_id: item.aweme_id, title: item.title, ai_copy: ai });
+            results.push({ aweme_id: item.aweme_id, title: item.title, transcript_provider: speech?.provider ?? "metadata_draft", ai_copy: ai });
             if (job) job.success_count += 1;
           } catch (error) {
             if (job) job.failed_count += 1;
@@ -961,7 +978,7 @@ export function createApp(options: CreateAppOptions = {}) {
       };
 
       if (asyncMode) {
-        const job = createBatchPostJob("ai", items.length, permissionsForSession(session).queue_priority, { mode, prompt: prompt ?? null, alias: "/api/v1/ai/batch" });
+        const job = createBatchPostJob("ai", items.length, permissionsForSession(session).queue_priority, { mode, prompt: prompt ?? null, transcribe: transcribeAudio, alias: "/api/v1/ai/batch" });
         await enqueuePostJob(task, job, async (runningJob) => {
           const results = await runAiJob(runningJob);
           await store.recordUsage({ kind: `batch_ai_${mode}_async_done`, user_key: session.code, ip: getClientIp(c), path: "/api/v1/ai/batch", status: 200, detail: JSON.stringify({ task_id: task.id, job_id: runningJob.id, count: results.length }) });
@@ -1101,18 +1118,34 @@ export function createApp(options: CreateAppOptions = {}) {
         if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含 AI 文案能力", 403);
         await enforceMemberRateLimit("ai_transcript", c, session, aiQuota, 24 * 60 * 60 * 1000);
       } else {
-        await enforcePublicRateLimit("ai_transcript_guest", c, Math.max(10, Math.min(30, (await getEffectiveRateLimits()).ai_per_day)), 24 * 60 * 60 * 1000);
+        await enforcePublicRateLimit("ai_transcript_guest", c, Math.max(1, Math.min(10, (await getEffectiveRateLimits()).ai_per_day)), 24 * 60 * 60 * 1000);
       }
       const body = await readJsonBody(c);
       const inputUrl = asString(body.url);
       if (!inputUrl) throw new DouyinServiceError("MISSING_URL");
       const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
-      const transcript = createTranscriptDraft(parsed);
-      await store.recordUsage({ kind: "ai_transcript", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/ai/transcript", status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, provider: "metadata_draft", guest: !session }) });
+      const speech = await runConfiguredAsr(parsed, store);
+      const transcript = speech?.transcript ?? createTranscriptDraft(parsed);
+      const provider = speech?.provider ?? "metadata_draft";
+      await store.recordUsage({
+        kind: "ai_transcript",
+        user_key: sessionKey,
+        ip: getClientIp(c),
+        path: "/api/v1/ai/transcript",
+        status: 200,
+        detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, provider, guest: !session, duration_seconds: speech?.duration_seconds ?? null, model: speech?.model ?? null }),
+      });
       return c.json(
         success({
-          provider: "metadata_draft",
+          provider,
           transcript,
+          degraded: !speech,
+          degraded_reason: speech ? null : "asr_disabled",
+          model: speech?.model ?? null,
+          language: speech?.language ?? null,
+          duration_seconds: speech?.duration_seconds ?? null,
+          queue_wait_ms: speech?.queue_wait_ms ?? 0,
+          usage: speech?.usage ?? null,
           source: parsed.source,
           title: parsed.content.desc,
           author: parsed.author,
@@ -1139,15 +1172,16 @@ export function createApp(options: CreateAppOptions = {}) {
         if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含 AI 文案能力", 403);
         await enforceMemberRateLimit("ai", c, session, aiQuota, 24 * 60 * 60 * 1000);
       } else {
-        await enforcePublicRateLimit(responseKind === "tags" ? "ai_tags_guest" : "ai_script_guest", c, Math.max(10, Math.min(30, (await getEffectiveRateLimits()).ai_per_day)), 24 * 60 * 60 * 1000);
+        await enforcePublicRateLimit(responseKind === "tags" ? "ai_tags_guest" : "ai_script_guest", c, Math.max(1, Math.min(10, (await getEffectiveRateLimits()).ai_per_day)), 24 * 60 * 60 * 1000);
       }
       const body = await readJsonBody(c);
       const inputUrl = asString(body.url);
       if (!inputUrl) throw new DouyinServiceError("MISSING_URL");
       const prompt = asString(body.prompt);
+      const sourceTranscript = asString(body.transcript);
       const mode = asString(body.mode) ?? defaultMode;
       const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
-      const data = session ? await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher }) : makeLocalAiCopy(parsed, prompt, mode);
+      const data = await generateAiCopy({ parsed, prompt, mode, sourceTranscript, store, fetcher: parserOptions.fetcher });
       await store.recordUsage({ kind: `ai_${mode}`, user_key: sessionKey, ip: getClientIp(c), path, status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, response: responseKind, provider: data.provider, guest: !session }) });
       return c.json(
         success(
@@ -1558,6 +1592,11 @@ export function createApp(options: CreateAppOptions = {}) {
           base_url: data.base_url,
           model: data.model,
           enabled: data.enabled,
+          asr_base_url: data.asr_base_url,
+          asr_model: data.asr_model,
+          asr_language: data.asr_language,
+          asr_timeout_ms: data.asr_timeout_ms,
+          asr_enabled: data.asr_enabled,
           timeout_ms: data.timeout_ms,
           max_tokens: data.max_tokens,
           temperature: data.temperature,
@@ -1576,6 +1615,29 @@ export function createApp(options: CreateAppOptions = {}) {
       const body = await readJsonBody(c);
       const data = await testLlmSettings(body, store, parserOptions.fetcher);
       await store.recordAudit({ actor: "admin", action: "llm_settings_test", ip: getClientIp(c), detail: JSON.stringify({ base_url: data.base_url, model: data.model, latency_ms: data.latency_ms }) });
+      return c.json(success(data));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/settings/llm/test-asr", async (c) => {
+    const store = await creatorStorePromise;
+    try {
+      requireAdmin(c, adminSessions, { mutation: true });
+      const body = await readJsonBody(c);
+      const current = await store.getLlmSettings();
+      const apiKey = asString(body.api_key) ?? (await store.getRawApiKey());
+      if (!apiKey) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "api key is required for ASR test", 400);
+      const settings = {
+        ...current,
+        asr_base_url: (asString(body.asr_base_url) ?? current.asr_base_url).replace(/\/+$/, ""),
+        asr_model: asString(body.asr_model) ?? current.asr_model,
+        asr_language: body.asr_language === "zh" || body.asr_language === "en" || body.asr_language === "auto" ? body.asr_language : current.asr_language,
+        asr_timeout_ms: parsePositiveInt(body.asr_timeout_ms, current.asr_timeout_ms),
+      };
+      const data = await testMimoAsrSettings({ settings, apiKey, fetcher: parserOptions.fetcher });
+      await store.recordAudit({ actor: "admin", action: "llm_asr_settings_test", ip: getClientIp(c), detail: JSON.stringify({ base_url: data.base_url, model: data.model, language: data.language, latency_ms: data.latency_ms }) });
       return c.json(success(data));
     } catch (error) {
       return jsonError(c, error);

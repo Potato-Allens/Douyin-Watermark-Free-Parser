@@ -7,6 +7,11 @@ export interface LlmSettings {
   base_url: string;
   api_key_masked: string | null;
   model: string | null;
+  asr_base_url: string;
+  asr_model: string;
+  asr_language: "auto" | "zh" | "en";
+  asr_timeout_ms: number;
+  asr_enabled: boolean;
   timeout_ms: number;
   max_tokens: number;
   temperature: number;
@@ -18,6 +23,11 @@ export interface LlmSettingsInput {
   base_url?: string;
   api_key?: string;
   model?: string;
+  asr_base_url?: string;
+  asr_model?: string;
+  asr_language?: "auto" | "zh" | "en";
+  asr_timeout_ms?: number;
+  asr_enabled?: boolean;
   timeout_ms?: number;
   max_tokens?: number;
   temperature?: number;
@@ -143,6 +153,11 @@ const DEFAULT_LLM_SETTINGS: Omit<LlmSettings, "updated_at"> = {
   base_url: "https://token-plan-cn.xiaomimimo.com/v1",
   api_key_masked: null,
   model: null,
+  asr_base_url: "https://api.xiaomimimo.com/v1",
+  asr_model: "mimo-v2.5-asr",
+  asr_language: "auto",
+  asr_timeout_ms: 180_000,
+  asr_enabled: false,
   timeout_ms: 30_000,
   max_tokens: 900,
   temperature: 0.75,
@@ -201,9 +216,9 @@ export function createTranscriptDraft(parsed: ParsedDouyinInfo): string {
   ].join("\n");
 }
 
-export function makeLocalAiCopy(parsed: ParsedDouyinInfo, prompt: string | null, mode = "rewrite"): AiCopyResult {
+export function makeLocalAiCopy(parsed: ParsedDouyinInfo, prompt: string | null, mode = "rewrite", sourceTranscript?: string | null): AiCopyResult {
   const baseTitle = parsed.content.desc ?? "短视频内容";
-  const transcript = createTranscriptDraft(parsed);
+  const transcript = asString(sourceTranscript) ?? createTranscriptDraft(parsed);
   const topic = trimText(baseTitle.replace(/[#@].*$/g, ""), 36) || "这个视频";
   const custom = prompt ? `\n改写要求：${prompt}` : "";
   return {
@@ -231,6 +246,7 @@ export async function generateAiCopy(options: {
   parsed: ParsedDouyinInfo;
   prompt?: string | null;
   mode?: string;
+  sourceTranscript?: string | null;
   store?: CreatorStore;
   fetcher?: FetchLike;
 }): Promise<AiCopyResult> {
@@ -239,10 +255,10 @@ export async function generateAiCopy(options: {
   const apiKey = await store.getRawApiKey();
   const mode = options.mode ?? "rewrite";
   if (!settings.enabled || !apiKey || !settings.model) {
-    return makeLocalAiCopy(options.parsed, options.prompt ?? null, mode);
+    return makeLocalAiCopy(options.parsed, options.prompt ?? null, mode, options.sourceTranscript);
   }
 
-  const local = makeLocalAiCopy(options.parsed, options.prompt ?? null, mode);
+  const local = makeLocalAiCopy(options.parsed, options.prompt ?? null, mode, options.sourceTranscript);
   const prompt = [
     "你是短视频文案策划，请基于输入的视频信息生成 JSON。",
     "JSON 字段必须包含 title、transcript、rewritten_script、description、tags。",
@@ -254,7 +270,7 @@ export async function generateAiCopy(options: {
       author: options.parsed.author,
       stats: options.parsed.stats,
       music: options.parsed.music,
-      local_transcript_draft: local.transcript,
+      source_transcript: local.transcript,
     })}`,
   ]
     .filter(Boolean)
@@ -558,10 +574,17 @@ async function createCreatorStore(): Promise<CreatorStore> {
 
 function normalizeSettings(input: LlmSettingsInput, current: LlmSettings): LlmSettings {
   const base = asString(input.base_url) ?? current.base_url ?? DEFAULT_LLM_SETTINGS.base_url;
+  const asrBase = asString(input.asr_base_url) ?? current.asr_base_url ?? DEFAULT_LLM_SETTINGS.asr_base_url;
+  const asrLanguage = input.asr_language === "zh" || input.asr_language === "en" || input.asr_language === "auto" ? input.asr_language : current.asr_language ?? DEFAULT_LLM_SETTINGS.asr_language;
   return {
     base_url: base.replace(/\/+$/, ""),
     api_key_masked: current.api_key_masked,
     model: asString(input.model) ?? current.model ?? DEFAULT_LLM_SETTINGS.model,
+    asr_base_url: asrBase.replace(/\/+$/, ""),
+    asr_model: asString(input.asr_model) ?? current.asr_model ?? DEFAULT_LLM_SETTINGS.asr_model,
+    asr_language: asrLanguage,
+    asr_timeout_ms: asPositiveNumber(input.asr_timeout_ms, current.asr_timeout_ms ?? DEFAULT_LLM_SETTINGS.asr_timeout_ms),
+    asr_enabled: typeof input.asr_enabled === "boolean" ? input.asr_enabled : current.asr_enabled ?? DEFAULT_LLM_SETTINGS.asr_enabled,
     timeout_ms: asPositiveNumber(input.timeout_ms, current.timeout_ms ?? DEFAULT_LLM_SETTINGS.timeout_ms),
     max_tokens: asPositiveNumber(input.max_tokens, current.max_tokens ?? DEFAULT_LLM_SETTINGS.max_tokens),
     temperature: asFiniteNumber(input.temperature, current.temperature ?? DEFAULT_LLM_SETTINGS.temperature),

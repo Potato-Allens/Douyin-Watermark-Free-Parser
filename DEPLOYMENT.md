@@ -39,6 +39,13 @@ DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
 ADMIN_LOGIN_MAX_FAILURES=5
 ADMIN_LOGIN_WINDOW_MINUTES=15
 ADMIN_LOGIN_LOCK_MINUTES=15
+ASR_MAX_CONCURRENCY=1
+ASR_MAX_QUEUE=20
+ASR_MAX_VIDEO_BYTES=125829120
+ASR_MAX_AUDIO_BYTES=25165824
+ASR_MEDIA_TIMEOUT_MS=120000
+FFMPEG_PATH=/usr/bin/ffmpeg
+FFMPEG_TIMEOUT_MS=120000
 ```
 
 `ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty and TOTP has never been bound, the `/admin` login page can generate the first scan QR after the admin username/password is verified; scan it, enter the 6-digit code, and the page will enable TOTP and sign in. After TOTP is enabled, displaying an existing QR/secret requires the current 6-digit code. Unauthenticated visitors receive only the login page; the backend workspace is rendered after a valid cookie login.
@@ -50,6 +57,16 @@ sudo apt-get update
 sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
 command -v chromium-browser || command -v chromium
 ```
+
+Real mouth-script recognition requires FFmpeg. The service downloads the parsed video, extracts a 16 kHz mono MP3, and calls Xiaomi `mimo-v2.5-asr`. Install and verify it before enabling ASR in `/admin`:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ffmpeg
+ffmpeg -version
+```
+
+In `/admin` → **AI 模型**, enter the Xiaomi API Key, keep ASR endpoint `https://api.xiaomimimo.com/v1`, model `mimo-v2.5-asr`, click **测试语音识别**, enable it, and save. The Docker image already includes FFmpeg.
 
 ## 3. Node/systemd Deployment
 
@@ -77,6 +94,9 @@ Environment=ADMIN_PASSWORD=change-this-password
 Environment=ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
 Environment=DOUYIN_COMMENTS_BROWSER=1
 Environment=DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
+Environment=ASR_MAX_CONCURRENCY=1
+Environment=ASR_MAX_QUEUE=20
+Environment=FFMPEG_PATH=/usr/bin/ffmpeg
 ExecStart=/usr/local/bin/pnpm start
 Restart=always
 RestartSec=3

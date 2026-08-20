@@ -14,7 +14,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Profile works preview, member-isolated batch task history, persistent queue progress, and JSON/CSV/text/cover ZIP/comment export.
 - Async batch post-processing queue for batch AI copywriting and batch comment fetching for viewing/export; progress is persisted in each batch task.
 - Single-video comments view/export, plus batch-task comments view/export.
-- Transcript-draft parsing plus Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
+- Real speech-to-text with Xiaomi `mimo-v2.5-asr`: the Node service extracts MP3 audio with FFmpeg, sends it as `input_audio`, and forwards the recognized transcript into Xiaomi/OpenAI-compatible rewriting, title, description, and tag generation. When ASR is disabled the API explicitly reports a degraded metadata draft.
 - Admin console `/admin` with a server-gated login entry, HttpOnly cookie session, password + Google Authenticator/TOTP self-service setup, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
 - Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
 - Cookie-session mutations use double-submit CSRF tokens; bearer-token API calls remain supported for the web UI and server-side operation.
@@ -180,6 +180,7 @@ POST /api/admin/totp/verify
 GET  /api/admin/settings/llm
 POST /api/admin/settings/llm
 POST /api/admin/settings/llm/test
+POST /api/admin/settings/llm/test-asr
 GET  /api/admin/dashboard
 GET  /api/admin/metrics
 GET  /api/admin/usage/summary
@@ -207,6 +208,18 @@ POST /api/admin/activation-codes
 
 Admin login supports username/password plus Google Authenticator/TOTP. Before authentication, `GET /admin` returns only the dedicated login page; the backend workspace markup is rendered only for a valid server-side cookie session. If no authenticator has been bound yet, `/api/admin/totp/bootstrap` can generate the first QR after username/password verification, and `/api/admin/totp/bootstrap/verify` verifies the 6-digit code, enables TOTP, and creates the admin session. Once TOTP is enabled, reading an existing QR/secret also requires the current 6-digit code. Logged-in admins can use `/api/admin/totp/setup` and `/api/admin/totp/verify` to rotate, enable, or disable stored TOTP, and `/api/admin/logout` revokes the server session. Cookie mutations require CSRF, failed login attempts are locked by IP + username, auth request bodies are JSON-only and size-limited, and admin pages/responses are marked `no-store`. `/api/admin/dashboard` aggregates online count, adaptive queue capacity, usage summary, rate limits, security policy summary, and recent jobs for the admin overview. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
 
+### Xiaomi ASR configuration
+
+Open `/admin` → **AI 模型** and configure:
+
+- Shared Xiaomi API Key.
+- ASR endpoint: `https://api.xiaomimimo.com/v1` (or a compatible Xiaomi Token Plan gateway).
+- ASR model: `mimo-v2.5-asr`.
+- Language: `auto`, `zh`, or `en`.
+- Enable **口播识别**, click **测试语音识别**, then save.
+
+`POST /api/v1/ai/transcript` then performs real video-audio recognition. The response uses `provider: "xiaomi_asr"` for a real transcript and `provider: "metadata_draft", degraded: true` only when ASR is disabled. `POST /api/v1/ai/rewrite` accepts the returned text in the `transcript` field, and batch AI requests use `transcribe: true` to recognize each video's audio before rewriting. Xiaomi's API accepts MP3/WAV audio through `/v1/chat/completions`; see the [official speech-recognition documentation](https://mimo.mi.com/docs/zh-CN/api/audio/Speech-Recognition).
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -233,6 +246,13 @@ Admin login supports username/password plus Google Authenticator/TOTP. Before au
 | `AI_RATE_LIMIT_PER_DAY` | `1000` | Global AI call ceiling per user |
 | `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comment fetch/export ceiling per user |
 | `POST_JOB_MAX_ACTIVE` | `2` | Max concurrent async batch AI/comment post-processing jobs |
+| `ASR_MAX_CONCURRENCY` | `1` | Max active video-to-ASR jobs per Node process |
+| `ASR_MAX_QUEUE` | `20` | Max waiting ASR requests before returning 503 |
+| `ASR_MAX_VIDEO_BYTES` | `125829120` | Maximum downloaded source video size |
+| `ASR_MAX_AUDIO_BYTES` | `25165824` | Maximum extracted MP3 size sent to Xiaomi |
+| `ASR_MEDIA_TIMEOUT_MS` | `120000` | Source video download timeout |
+| `FFMPEG_PATH` | `ffmpeg` | FFmpeg executable path |
+| `FFMPEG_TIMEOUT_MS` | `120000` | Audio extraction timeout |
 | `DOUYIN_COMMENTS_BROWSER` | `1` | Enable the Node Chromium fallback when Douyin returns an empty direct comment response; set `0` to disable |
 | `DOUYIN_CHROMIUM_PATH` | auto-detect | Optional absolute Chromium/Chrome executable path used by real comment viewing/export |
 

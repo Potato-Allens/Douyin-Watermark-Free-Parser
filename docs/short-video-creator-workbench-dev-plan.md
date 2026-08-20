@@ -36,9 +36,9 @@
 - 前台可读取当前会员权益：`GET /api/v1/me`。
 - 后台支持套餐配置：`GET/POST /api/admin/plans`。
 - 后台支持激活码生成/更新：`GET/POST /api/admin/codes`。
-- 后台支持小米大模型配置和测试连接：`GET/POST /api/admin/settings/llm`、`POST /api/admin/settings/llm/test`。
+- 后台支持小米文字模型与 `mimo-v2.5-asr` 配置和测试连接：`GET/POST /api/admin/settings/llm`、`POST /api/admin/settings/llm/test`、`POST /api/admin/settings/llm/test-asr`。
 - 后台 Google Authenticator 动态码配置闭环已落地：`GET /api/admin/totp`、`POST /api/admin/totp/setup`、`POST /api/admin/totp/verify` 支持生成 Base32 密钥、复制 `otpauth_uri`、验证六位码后启用/停用，并写入审计日志。
-- AI 文案接口已按会员套餐日额度限流：`POST /api/v1/ai/transcript` 先生成口播草稿，`POST /api/v1/ai/script` 生成标题、文案、简介和标签；`POST /api/v1/ai/rewrite`、`POST /api/v1/ai/tags`、`POST /api/v1/ai/batch` 作为改写、标签和批量文案的直观入口。
+- AI 文案接口已按会员套餐日额度限流：`POST /api/v1/ai/transcript` 在 Node 端下载视频、用 FFmpeg 提取 MP3、调用小米 `mimo-v2.5-asr` 生成真实口播文本；`POST /api/v1/ai/script`、`POST /api/v1/ai/rewrite` 会接收该原文并生成标题、文案、简介和标签；`POST /api/v1/ai/batch` 支持逐条 ASR 后再改写。
 - 批量解析按会员套餐限制单次数量和并发。
 
 ## 1.3 本轮开发落地
@@ -291,10 +291,10 @@ flowchart TD
 
 ### 6.1 口播文案来源优先级
 
-1. 页面结构里可直接提取的字幕/文本字段。
-2. 视频标题、介绍、评论、音乐、画面信息生成“视频文案摘要”。
-3. 可插拔 ASR 转写适配器：后续如果接入音频转写服务，可从视频音频生成真实逐字稿。
-4. 小米大模型用于改写、润色、标题、标签、介绍生成。
+1. 视频音轨通过 FFmpeg 转成 16 kHz 单声道 MP3，再调用小米 `mimo-v2.5-asr` 获取真实口播文本。
+2. 真实口播文本作为 `transcript` 传给小米文字模型，用于改写、润色、标题、标签和介绍生成。
+3. ASR 未启用时才降级为视频标题、作者、音乐和互动数据组成的元数据草稿，接口明确返回 `degraded: true`，不冒充真实转写。
+4. 单条与批量共用 ASR 并发队列、媒体大小限制、超时和调用限流。
 
 ### 6.2 单条 AI 操作
 
@@ -343,6 +343,11 @@ flowchart TD
 | `base_url` | 默认 `https://token-plan-cn.xiaomimimo.com/v1` |
 | `api_key` | 后台填写，加密保存 |
 | `model` | 模型名称 |
+| `asr_base_url` | 默认 `https://api.xiaomimimo.com/v1` |
+| `asr_model` | 固定推荐 `mimo-v2.5-asr` |
+| `asr_language` | `auto` / `zh` / `en` |
+| `asr_timeout_ms` | ASR 请求超时，默认 180000 |
+| `asr_enabled` | 是否启用真实口播识别 |
 | `timeout_ms` | 请求超时 |
 | `max_tokens` | 最大输出 token |
 | `temperature` | 创作温度 |

@@ -207,6 +207,10 @@ describe("api routes", () => {
       expect(html).toContain('id="llmTimeout"');
       expect(html).toContain('id="llmMaxTokens"');
       expect(html).toContain('id="llmTemperature"');
+      expect(html).toContain('id="llmAsrBase"');
+      expect(html).toContain('id="llmAsrModel"');
+      expect(html).toContain('id="testAsrBtn"');
+      expect(html).toContain("/api/admin/settings/llm/test-asr");
       expect(html).toContain('id="mQueue"');
       expect(html).toContain('id="mCapacity"');
       expect(html).toContain('class="tab-nav"');
@@ -272,6 +276,11 @@ describe("api routes", () => {
         body: JSON.stringify({
           base_url: "https://token-plan-cn.xiaomimimo.com/v1/",
           model: "xiaomi-test",
+          asr_base_url: "https://api.xiaomimimo.com/v1/",
+          asr_model: "mimo-v2.5-asr",
+          asr_language: "zh",
+          asr_timeout_ms: 180_000,
+          asr_enabled: true,
           api_key: "sk-test-123456",
           enabled: true,
           timeout_ms: 45_000,
@@ -285,6 +294,11 @@ describe("api routes", () => {
       expect(savedBody.data).toMatchObject({
         base_url: "https://token-plan-cn.xiaomimimo.com/v1",
         model: "xiaomi-test",
+        asr_base_url: "https://api.xiaomimimo.com/v1",
+        asr_model: "mimo-v2.5-asr",
+        asr_language: "zh",
+        asr_timeout_ms: 180_000,
+        asr_enabled: true,
         enabled: true,
         timeout_ms: 45_000,
         max_tokens: 1_200,
@@ -837,6 +851,55 @@ describe("api routes", () => {
     expect(transcriptBody.data.provider).toBe("metadata_draft");
     expect(transcriptBody.data.transcript).toBeTruthy();
     expect(transcriptBody.data.next.rewrite_endpoint).toBe("/api/v1/ai/script");
+  });
+
+  it("uses configured Xiaomi ASR for a real transcript and forwards it to rewriting", async () => {
+    const creatorStore = createMemoryCreatorStore();
+    await creatorStore.saveLlmSettings({ api_key: "sk-real-asr", asr_enabled: true, asr_model: "mimo-v2.5-asr", asr_language: "zh" });
+    let transcriberCalls = 0;
+    const app = createApp({
+      fetcher: makeFixtureFetcher(VIDEO_HTML),
+      creatorStore,
+      transcriber: async ({ apiKey, settings, parsed }) => {
+        transcriberCalls += 1;
+        expect(apiKey).toBe("sk-real-asr");
+        expect(settings.asr_model).toBe("mimo-v2.5-asr");
+        expect(parsed.source.aweme_id).toBe("7673000000000000001");
+        return {
+          provider: "xiaomi_asr",
+          transcript: "这是从视频声音识别出来的真实口播",
+          model: "mimo-v2.5-asr",
+          language: "zh",
+          duration_seconds: 12,
+          media_bytes: 1000,
+          audio_bytes: 500,
+          queue_wait_ms: 3,
+          usage: { prompt_tokens: 10, completion_tokens: 8, total_tokens: 18, audio_tokens: 9 },
+        };
+      },
+    });
+
+    const transcript = await app.request("/api/v1/ai/transcript", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/" }),
+    });
+    const transcriptBody = await transcript.json();
+    expect(transcript.status).toBe(200);
+    expect(transcriptBody.data.provider).toBe("xiaomi_asr");
+    expect(transcriptBody.data.degraded).toBe(false);
+    expect(transcriptBody.data.transcript).toBe("这是从视频声音识别出来的真实口播");
+    expect(transcriptBody.data.duration_seconds).toBe(12);
+    expect(transcriberCalls).toBe(1);
+
+    const rewritten = await app.request("/api/v1/ai/rewrite", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/", transcript: transcriptBody.data.transcript, prompt: "更口语化" }),
+    });
+    const rewrittenBody = await rewritten.json();
+    expect(rewritten.status).toBe(200);
+    expect(rewrittenBody.data.transcript).toBe("这是从视频声音识别出来的真实口播");
   });
 
   it("allows single-video AI copywriting locally without member activation", async () => {

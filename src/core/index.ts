@@ -7,3 +7,4 @@ export * from "./vip.ts";
 export * from "./batch.ts";
 export * from "./creator.ts";
 export * from "./comments.ts";
+export * from "./asr.ts";

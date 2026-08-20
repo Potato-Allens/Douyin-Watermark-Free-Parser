@@ -15,7 +15,7 @@ ENV NODE_OPTIONS=--experimental-sqlite
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 ENV DOUYIN_COMMENTS_BROWSER=1
 ENV DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
-RUN apk add --no-cache chromium
+RUN apk add --no-cache chromium ffmpeg
 COPY --from=deps /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
