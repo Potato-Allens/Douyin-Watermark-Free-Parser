@@ -121,8 +121,17 @@ describe("api routes", () => {
     expect(html).toContain('id="centerAiBtn" class="btn hidden"');
     expect(html).toContain('id="batchAiBtn" class="btn btn-primary hidden"');
     expect(html).toContain('id="exportScriptsBtn" class="btn hidden"');
+    expect(html).toContain('id="commentsBtn" class="btn hidden"');
+    expect(html).toContain('id="commentWorkspace" class="comment-workspace hidden"');
+    expect(html).toContain('id="collectBatchCommentsBtn" class="btn hidden"');
+    expect(html).toContain('id="viewBatchCommentsBtn" class="btn hidden"');
+    expect(html).toContain('id="exportCommentsBtn" class="btn hidden"');
+    expect(html).toContain('id="exportCommentsCsvBtn" class="btn hidden"');
+    expect(html).toContain("COMMENTS_FEATURE_ENABLED?'<button class=\"btn tiny\" data-comment=");
+    expect(html).toContain("filter(isVisiblePostJob)");
     expect(html).toContain("解析、预览和下载都围绕这条视频展开。");
     expect(html).toContain("const AI_FEATURE_ENABLED = false;");
+    expect(html).toContain("const COMMENTS_FEATURE_ENABLED = false;");
 
     const transcript = await app.request("/api/v1/ai/transcript", {
       method: "POST",
