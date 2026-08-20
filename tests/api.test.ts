@@ -147,6 +147,15 @@ describe("api routes", () => {
     expect(html).toContain('id="llmTemperature"');
     expect(html).toContain('id="mQueue"');
     expect(html).toContain('id="mCapacity"');
+    expect(html).toContain('class="tab-nav"');
+    expect(html).toContain('data-tab="overview"');
+    expect(html).toContain('data-tab="auth"');
+    expect(html).toContain('id="tab-security" class="tab-panel"');
+    expect(html).toContain("function switchTab(name)");
+    expect(html).not.toContain('<div class="card">');
+    const inlineScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(inlineScript).toBeTruthy();
+    expect(() => new Function(inlineScript!)).not.toThrow();
     expect(html).not.toContain("???");
   });
 

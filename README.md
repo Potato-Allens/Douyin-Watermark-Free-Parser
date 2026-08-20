@@ -231,6 +231,8 @@ Admin login supports username/password plus Google Authenticator/TOTP. If the ad
 | `AI_RATE_LIMIT_PER_DAY` | `1000` | Global AI call ceiling per user |
 | `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comment fetch/export ceiling per user |
 | `POST_JOB_MAX_ACTIVE` | `2` | Max concurrent async batch AI/comment post-processing jobs |
+| `DOUYIN_COMMENTS_BROWSER` | `1` | Enable the Node Chromium fallback when Douyin returns an empty direct comment response; set `0` to disable |
+| `DOUYIN_CHROMIUM_PATH` | auto-detect | Optional absolute Chromium/Chrome executable path used by real comment viewing/export |
 
 ## Deployment
 

@@ -33,12 +33,22 @@ BATCH_QUEUE_PRESSURE_ONLINE=5
 BATCH_QUEUE_PRESSURE_STEP=5
 AI_RATE_LIMIT_PER_DAY=1000
 COMMENTS_RATE_LIMIT_PER_DAY=200
+DOUYIN_COMMENTS_BROWSER=1
+DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
 ADMIN_LOGIN_MAX_FAILURES=5
 ADMIN_LOGIN_WINDOW_MINUTES=15
 ADMIN_LOGIN_LOCK_MINUTES=15
 ```
 
 `ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty, the `/admin` page can generate a scan QR before login after the admin username/password is verified; scan it, enter the 6-digit code, and the page will enable TOTP and sign in.
+
+Real comment viewing/export first tries the lightweight HTTP interface. If Douyin returns an empty anti-bot response, Node automatically falls back to a headless Chromium page and captures the browser-generated signed comment response. Install Chromium on Linux and set `DOUYIN_CHROMIUM_PATH` when it is not in a standard path:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
+command -v chromium-browser || command -v chromium
+```
 
 ## 3. Node/systemd Deployment
 
@@ -64,6 +74,8 @@ Environment=ONLINE_BASE_COUNT=0
 Environment=ADMIN_USERNAME=admin
 Environment=ADMIN_PASSWORD=change-this-password
 Environment=ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
+Environment=DOUYIN_COMMENTS_BROWSER=1
+Environment=DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
 ExecStart=/usr/local/bin/pnpm start
 Restart=always
 RestartSec=3
@@ -99,6 +111,7 @@ docker run -d \
   -e ADMIN_USERNAME=admin \
   -e ADMIN_PASSWORD="change-this-password" \
   -e ADMIN_TOTP_SECRET="BASE32_TOTP_SECRET" \
+  -e DOUYIN_COMMENTS_BROWSER=1 \
   -e ONLINE_BASE_COUNT=0 \
   douyin-parser
 ```

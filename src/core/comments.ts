@@ -24,6 +24,20 @@ export async function fetchDouyinComments(awemeId: string, options: DouyinCommen
   const normalizedAwemeId = normalizeAwemeId(awemeId);
   const cursor = clamp(Math.floor(options.cursor ?? 0), 0, Number.MAX_SAFE_INTEGER);
   const count = clamp(Math.floor(options.count ?? 20), 1, 100);
+  try {
+    return await fetchDouyinCommentsViaHttp(normalizedAwemeId, cursor, count, options);
+  } catch (error) {
+    if (!shouldUseBrowserFallback(options, error)) throw error;
+    return await fetchDouyinCommentsViaBrowser(normalizedAwemeId, cursor, count, options);
+  }
+}
+
+async function fetchDouyinCommentsViaHttp(
+  normalizedAwemeId: string,
+  cursor: number,
+  count: number,
+  options: DouyinCommentFetchOptions,
+): Promise<DouyinCommentFetchResult> {
   const endpoint = buildCommentListUrl(normalizedAwemeId, cursor, count);
   const fetcher: FetchLike = options.fetcher ?? globalThis.fetch;
   if (!fetcher) throw new DouyinServiceError("FETCH_FAILED", "fetch is not available");
@@ -80,6 +94,110 @@ export async function fetchDouyinComments(awemeId: string, options: DouyinCommen
   }
 }
 
+async function fetchDouyinCommentsViaBrowser(
+  normalizedAwemeId: string,
+  cursor: number,
+  count: number,
+  options: DouyinCommentFetchOptions,
+): Promise<DouyinCommentFetchResult> {
+  const totalTimeoutMs = clamp(options.timeoutMs ?? 25_000, 8_000, 60_000);
+  const executablePath = await findChromiumExecutable();
+  let browser: any = null;
+  const collected = new Map<string, BatchComment>();
+  let sourceUrl = `https://www.douyin.com/video/${normalizedAwemeId}`;
+  let nextCursor: number | null = null;
+  let hasMore = false;
+  let total: number | null = null;
+  let lastAcceptedAt = 0;
+
+  try {
+    const playwrightModule = "playwright" + "-core";
+    const mod: any = await import(playwrightModule);
+    browser = await mod.chromium.launch({
+      executablePath,
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+      ],
+    });
+    const context = await browser.newContext({
+      userAgent: options.userAgent ?? DESKTOP_USER_AGENT,
+      locale: "zh-CN",
+      viewport: { width: 1365, height: 900 },
+    });
+    const page = await context.newPage();
+    const acceptPayload = (url: string, data: unknown) => {
+      const urlCursor = readCursorFromUrl(url);
+      const rawComments = readArray(data, ["comments"]).map(normalizeComment).filter(isPresent);
+      if (rawComments.length === 0) return;
+      const pageStart = urlCursor ?? cursor;
+      const pageEnd = pageStart + rawComments.length;
+      if (pageEnd <= cursor) return;
+
+      const offset = Math.max(0, cursor - pageStart);
+      for (const comment of rawComments.slice(offset)) {
+        if (collected.size >= count) break;
+        collected.set(comment.cid, comment);
+      }
+      sourceUrl = url;
+      total = readNumber(data, ["total"]);
+      hasMore = Boolean(readBoolean(data, ["has_more"]) ?? readNumber(data, ["has_more"]));
+      nextCursor = hasMore ? readNumber(data, ["cursor"]) ?? pageStart + rawComments.length : null;
+      lastAcceptedAt = Date.now();
+    };
+
+    page.on("response", async (response: any) => {
+      const url = response.url();
+      if (!url.includes("/aweme/v1/web/comment/list/")) return;
+      try {
+        const text = await response.text();
+        if (!text.trim()) return;
+        acceptPayload(url, JSON.parse(text));
+      } catch {
+        // Ignore unrelated anti-bot / partial responses; the final result below decides success.
+      }
+    });
+
+    await page.goto(`https://www.douyin.com/video/${normalizedAwemeId}`, {
+      waitUntil: "domcontentloaded",
+      timeout: totalTimeoutMs,
+    });
+
+    const deadline = Date.now() + totalTimeoutMs;
+    while (Date.now() < deadline && collected.size < count && (collected.size === 0 || hasMore)) {
+      await Promise.race([
+        page.waitForTimeout(1_200),
+        page.waitForResponse((response: any) => response.url().includes("/aweme/v1/web/comment/list/"), { timeout: 1_500 }).catch(() => null),
+      ]);
+      if (collected.size >= count) break;
+      await scrollCommentSurface(page);
+      if (collected.size > 0 && !hasMore) break;
+      if (collected.size > 0 && Date.now() - lastAcceptedAt > 6_000) break;
+    }
+
+    const comments = [...collected.values()].slice(0, count);
+    if (comments.length === 0) throw new DouyinServiceError("FETCH_FAILED", "browser comment collector did not receive comments");
+    return {
+      aweme_id: normalizedAwemeId,
+      source_url: sourceUrl,
+      cursor,
+      next_cursor: hasMore ? nextCursor : null,
+      has_more: hasMore,
+      total,
+      comments,
+    };
+  } catch (error) {
+    if (error instanceof DouyinServiceError) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new DouyinServiceError("FETCH_FAILED", `browser comment collector failed: ${detail}`);
+  } finally {
+    await browser?.close?.().catch?.(() => undefined);
+  }
+}
+
 function buildCommentListUrl(awemeId: string, cursor: number, count: number): string {
   const endpoint = new URL("https://www.douyin.com/aweme/v1/web/comment/list/");
   endpoint.searchParams.set("device_platform", "webapp");
@@ -109,6 +227,63 @@ function buildCommentListUrl(awemeId: string, cursor: number, count: number): st
   endpoint.searchParams.set("os_name", "Windows");
   endpoint.searchParams.set("os_version", "10");
   return endpoint.toString();
+}
+
+function shouldUseBrowserFallback(options: DouyinCommentFetchOptions, error: unknown): boolean {
+  if (options.fetcher) return false;
+  if (!isNodeRuntime()) return false;
+  const env = readProcessEnv();
+  if (env.DOUYIN_COMMENTS_BROWSER === "0" || env.DOUYIN_COMMENTS_BROWSER?.toLowerCase() === "false") return false;
+  if (!(error instanceof DouyinServiceError)) return false;
+  return error.code === "FETCH_FAILED" || error.code === "PARSE_FAILED";
+}
+
+function isNodeRuntime(): boolean {
+  return typeof process !== "undefined" && Boolean(process.versions?.node);
+}
+
+function readProcessEnv(): Record<string, string | undefined> {
+  return isNodeRuntime() ? process.env : {};
+}
+
+async function findChromiumExecutable(): Promise<string | undefined> {
+  const env = readProcessEnv();
+  const configured = env.DOUYIN_CHROMIUM_PATH || env.CHROMIUM_PATH || env.CHROME_PATH;
+  if (configured) return configured;
+  const candidates =
+    process.platform === "win32"
+      ? [
+          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+          `${env.LOCALAPPDATA ?? ""}\\Google\\Chrome\\Application\\chrome.exe`,
+          "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+          "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        ]
+      : ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome"];
+  const fs = await import("node:fs");
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate));
+}
+
+function readCursorFromUrl(url: string): number | null {
+  try {
+    const value = new URL(url).searchParams.get("cursor");
+    const parsed = value === null ? NaN : Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function scrollCommentSurface(page: any): Promise<void> {
+  await page.mouse.wheel(0, 1_400).catch(() => undefined);
+  await page.keyboard.press("PageDown").catch(() => undefined);
+  await page.evaluate(() => {
+    const scrollables = [...document.querySelectorAll<HTMLElement>("div,section,main")].filter((node) => {
+      const style = window.getComputedStyle(node);
+      return /(auto|scroll)/.test(`${style.overflow}${style.overflowY}`) && node.scrollHeight > node.clientHeight + 80;
+    });
+    for (const node of scrollables.slice(0, 8)) node.scrollTop = node.scrollHeight;
+  }).catch(() => undefined);
 }
 
 function normalizeAwemeId(value: string): string {
