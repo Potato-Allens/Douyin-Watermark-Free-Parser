@@ -243,6 +243,7 @@ Open `/admin` → **AI 模型** and configure:
 | `BATCH_MAX_GLOBAL_CONCURRENCY` | `4` | Base global parse worker concurrency |
 | `BATCH_QUEUE_PRESSURE_ONLINE` | `5` | Online users threshold where batch resources start to shrink |
 | `BATCH_QUEUE_PRESSURE_STEP` | `5` | More online users per additional resource pressure level |
+| `PUBLIC_AI_FEATURES_ENABLED` | `true` | Set to `false` to hide the public AI/ASR controls and return 404 from public AI endpoints while keeping the implementation available |
 | `AI_RATE_LIMIT_PER_DAY` | `1000` | Global AI call ceiling per user |
 | `COMMENTS_RATE_LIMIT_PER_DAY` | `200` | Global comment fetch/export ceiling per user |
 | `POST_JOB_MAX_ACTIVE` | `2` | Max concurrent async batch AI/comment post-processing jobs |

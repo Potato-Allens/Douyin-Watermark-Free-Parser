@@ -40,6 +40,7 @@ export interface CreateAppOptions {
   transcriber?: VideoTranscriber;
   onlineBaseCount?: number;
   onlineTtlMs?: number;
+  publicAiFeaturesEnabled?: boolean;
 }
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -76,6 +77,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const onlineSessions = new Map<string, number>();
   const onlineTtlMs = options.onlineTtlMs ?? 45_000;
   const onlineBaseCount = options.onlineBaseCount ?? parsePositiveInt(getRuntimeEnv().ONLINE_BASE_COUNT, 0);
+  const publicAiFeaturesEnabled =
+    options.publicAiFeaturesEnabled ?? (getRuntimeEnv().PUBLIC_AI_FEATURES_ENABLED?.trim().toLowerCase() !== "false");
   const creatorStorePromise = options.creatorStore ? Promise.resolve(options.creatorStore) : getCreatorStore();
   const videoTranscriber = options.transcriber ?? transcribeDouyinVideo;
   const adminSessions = new Map<string, number>();
@@ -112,6 +115,12 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!apiKey) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "语音识别已启用，但后台尚未配置小米 API Key", 503);
     if (!settings.asr_model) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "语音识别模型未配置", 503);
     return await videoTranscriber({ parsed, settings, apiKey, fetcher: parserOptions.fetcher });
+  };
+
+  const requirePublicAiFeatures = () => {
+    if (!publicAiFeaturesEnabled) {
+      throw new DouyinServiceError("UNSUPPORTED_CONTENT", "AI 口播文案功能当前已关闭", 404);
+    }
   };
 
   const recordRateLimitBlock = async (input: { kind: string; userKey?: string; ip: string; path: string; limit: number; windowMs: number; cost: number }) => {
@@ -420,7 +429,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/", async (c) => {
     const requestUrl = new URL(c.req.url);
-    if (!requestUrl.searchParams.has("url")) return c.html(renderHomePage());
+    if (!requestUrl.searchParams.has("url")) return c.html(renderHomePage({ aiFeaturesEnabled: publicAiFeaturesEnabled }));
     return handleCompat(c.req.url, parseForRequest, {
       before: async () => {
         await guardPublicAccess(c, "compat_parse");
@@ -849,6 +858,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/v1/batch/:id/ai", async (c) => {
     const store = await creatorStorePromise;
     try {
+      requirePublicAiFeatures();
       await guardPublicAccess(c, "batch_ai");
       const session = await requireVip(c, await getStore(), { mutation: true });
       const task = await getBatchTask(c.req.param("id"));
@@ -925,6 +935,7 @@ export function createApp(options: CreateAppOptions = {}) {
     let sessionKey = "unknown";
     let taskId = "unknown";
     try {
+      requirePublicAiFeatures();
       await guardPublicAccess(c, "batch_ai");
       const session = await requireVip(c, await getStore(), { mutation: true });
       sessionKey = session.code;
@@ -1110,6 +1121,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = await creatorStorePromise;
     let sessionKey = "guest";
     try {
+      requirePublicAiFeatures();
       await guardPublicAccess(c, "ai_transcript");
       const session = await getOptionalVipSession(c, { mutation: true });
       sessionKey = session?.code ?? "guest";
@@ -1164,6 +1176,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = await creatorStorePromise;
     let sessionKey = "unknown";
     try {
+      requirePublicAiFeatures();
       await guardPublicAccess(c, responseKind === "tags" ? "ai_tags" : "ai_script");
       const session = await getOptionalVipSession(c, { mutation: true });
       sessionKey = session?.code ?? "guest";

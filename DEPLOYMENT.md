@@ -32,6 +32,7 @@ BATCH_MAX_ACTIVE_TASKS=2
 BATCH_MAX_GLOBAL_CONCURRENCY=4
 BATCH_QUEUE_PRESSURE_ONLINE=5
 BATCH_QUEUE_PRESSURE_STEP=5
+PUBLIC_AI_FEATURES_ENABLED=false
 AI_RATE_LIMIT_PER_DAY=1000
 COMMENTS_RATE_LIMIT_PER_DAY=200
 DOUYIN_COMMENTS_BROWSER=1
@@ -68,6 +69,8 @@ ffmpeg -version
 
 In `/admin` → **AI 模型**, enter the Xiaomi API Key, keep ASR endpoint `https://api.xiaomimimo.com/v1`, model `mimo-v2.5-asr`, click **测试语音识别**, enable it, and save. The Docker image already includes FFmpeg.
 
+Set `PUBLIC_AI_FEATURES_ENABLED=false` when the server should not expose public mouth-script/AI features. This removes the controls from the visible workbench and makes `/api/v1/ai/*` plus the batch AI routes return 404; source code and admin configuration remain available for later re-enabling.
+
 ## 3. Node/systemd Deployment
 
 ```bash
@@ -94,6 +97,7 @@ Environment=ADMIN_PASSWORD=change-this-password
 Environment=ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
 Environment=DOUYIN_COMMENTS_BROWSER=1
 Environment=DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
+Environment=PUBLIC_AI_FEATURES_ENABLED=false
 Environment=ASR_MAX_CONCURRENCY=1
 Environment=ASR_MAX_QUEUE=20
 Environment=FFMPEG_PATH=/usr/bin/ffmpeg

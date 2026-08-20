@@ -94,6 +94,41 @@ describe("api routes", () => {
     expect(appIcon.headers.get("content-type")).toContain("image/svg+xml");
   });
 
+  it("hides and disables public AI copywriting when the feature switch is off", async () => {
+    const app = createApp({
+      fetcher: makeFixtureFetcher(VIDEO_HTML),
+      creatorStore: createMemoryCreatorStore(),
+      publicAiFeaturesEnabled: false,
+    });
+
+    const page = await app.request("/");
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain('class="ai-feature hidden"');
+    expect(html).toContain('id="centerAiBtn" class="btn hidden"');
+    expect(html).toContain('id="batchAiBtn" class="btn btn-primary hidden"');
+    expect(html).toContain('id="exportScriptsBtn" class="btn hidden"');
+    expect(html).toContain("解析、预览、下载和评论都围绕这条视频展开。");
+    expect(html).toContain("const AI_FEATURE_ENABLED = false;");
+
+    const transcript = await app.request("/api/v1/ai/transcript", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/" }),
+    });
+    const transcriptBody = await transcript.json();
+    expect(transcript.status).toBe(404);
+    expect(transcriptBody.ok).toBe(false);
+    expect(transcriptBody.error.detail).toBe("AI 口播文案功能当前已关闭");
+
+    const script = await app.request("/api/v1/ai/script", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/" }),
+    });
+    expect(script.status).toBe(404);
+  });
+
   it("keeps /api/hello compatibility message when url is missing", async () => {
     const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML) });
     const response = await app.request("/api/hello");
