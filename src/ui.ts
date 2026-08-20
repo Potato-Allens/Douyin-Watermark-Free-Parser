@@ -63,7 +63,7 @@ export function renderHomePage(options: HomePageOptions = {}): string {
             <span id="vipState" class="pill">未登录</span>
             <div id="memberBenefits" class="hint">会员权益会在登录后展示。</div>
             <input id="profileInput" class="small-input" placeholder="主页链接：https://www.douyin.com/user/..." />
-            <div class="batch-row"><button id="inspectBtn" class="btn" type="button">获取作品</button><input id="batchCount" class="small-input" type="number" min="1" value="5" aria-label="解析数量" /><input id="batchConcurrency" class="small-input" type="number" min="1" max="5" value="3" aria-label="并发数" /></div>
+            <div class="batch-row"><button id="inspectBtn" class="btn" type="button">获取作品</button><input id="batchCount" class="small-input" type="number" min="1" value="5" aria-label="目标作品数" title="输入希望累计获取的作品数量" /><input id="batchConcurrency" class="small-input" type="number" min="1" max="5" value="3" aria-label="并发数" /></div>
             <div id="profileFetchProgress" class="profile-fetch-progress hidden" role="progressbar" aria-label="主页作品获取进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="profile-progress-head"><strong id="profileProgressText">准备获取作品</strong><span id="profileProgressCount">0/0</span></div><div class="profile-progress-track"><i id="profileProgressBar"></i></div></div>
             <button id="startBatchBtn" class="btn btn-primary" type="button">创建解析任务</button>
             <div class="queue-metrics"><span>作品数<b id="profileDetected">--</b></span><span>队列<b id="queuePosition">--</b></span><span>优先级<b id="queuePriority">--</b></span></div>
