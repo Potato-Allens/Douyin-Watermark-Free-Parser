@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { stream } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import QRCode from "qrcode";
 import {
@@ -386,31 +387,60 @@ export function createApp(options: CreateAppOptions = {}) {
     return parsed;
   };
 
-  const buildProfilePreview = async (homepageUrl: string, previewLimit: number, publicRequestUrl: string, previewOffset = 0) => {
+  const parseProfilePreviewItem = async (awemeId: string, publicRequestUrl: string) => {
+    try {
+      const parsed = decorateParsedInfo(await parseForRequest(`https://www.douyin.com/video/${awemeId}`), publicRequestUrl);
+      return profilePreviewItem(awemeId, parsed);
+    } catch (error) {
+      return {
+        aweme_id: awemeId,
+        status: "failed",
+        page_url: `https://www.douyin.com/video/${awemeId}`,
+        title: null,
+        author_nickname: null,
+        cover_url: null,
+        video_url: null,
+        download_url: null,
+        music_title: null,
+        stats: { comment_count: null, digg_count: null, share_count: null, collect_count: null },
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
+  const buildProfilePreview = async (
+    homepageUrl: string,
+    previewLimit: number,
+    publicRequestUrl: string,
+    previewOffset = 0,
+    onProgress?: (event: Record<string, unknown>) => void | Promise<void>,
+  ) => {
     const offset = Math.max(0, Math.floor(previewOffset));
     const limit = Math.max(1, Math.floor(previewLimit));
+    await onProgress?.({ type: "phase", stage: "inspecting", message: "正在识别主页并获取作品列表" });
     const inspect = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems: offset + limit });
     const ids = inspect.aweme_ids.slice(offset, offset + limit);
     const items: Array<Record<string, unknown>> = [];
-    for (const awemeId of ids) {
-      try {
-        const parsed = decorateParsedInfo(await parseForRequest(`https://www.douyin.com/video/${awemeId}`), publicRequestUrl);
-        items.push(profilePreviewItem(awemeId, parsed));
-      } catch (error) {
-        items.push({
-          aweme_id: awemeId,
-          status: "failed",
-          page_url: `https://www.douyin.com/video/${awemeId}`,
-          title: null,
-          author_nickname: null,
-          cover_url: null,
-          video_url: null,
-          download_url: null,
-          music_title: null,
-          stats: { comment_count: null, digg_count: null, share_count: null, collect_count: null },
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    await onProgress?.({
+      type: "inspect",
+      stage: "parsing",
+      offset,
+      limit,
+      total_count: inspect.total_count,
+      available_count: inspect.available_count,
+      target_count: ids.length,
+      message: ids.length > 0 ? `已获取作品列表，开始解析 ${ids.length} 条作品` : "主页暂无可解析作品",
+    });
+    for (const [index, awemeId] of ids.entries()) {
+      const item = await parseProfilePreviewItem(awemeId, publicRequestUrl);
+      items.push(item);
+      await onProgress?.({
+        type: "item",
+        stage: "parsing",
+        current: index + 1,
+        total: ids.length,
+        item,
+      });
     }
     const loadedCount = offset + items.length;
     const fetchedToLimit = inspect.aweme_ids.length >= offset + limit;
@@ -752,6 +782,47 @@ export function createApp(options: CreateAppOptions = {}) {
       return c.json(success(data));
     } catch (error) {
       await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/v1/profile/preview/stream", async (c) => {
+    let sessionKey = "guest";
+    try {
+      await guardPublicAccess(c, "profile_preview");
+      const session = await getOptionalVipSession(c, { mutation: true });
+      sessionKey = session?.code ?? "guest";
+      const body = await readJsonBody(c);
+      const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
+      if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
+      const planLimit = session ? getBatchParseLimit(session) : 30;
+      const previewOffset = parseNonNegativeInt(body.offset, 0);
+      if (previewOffset >= planLimit) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `当前账号最多预览 ${planLimit} 条主页作品`, 403);
+      const previewLimit = Math.min(parsePositiveInt(body.count, 8), planLimit - previewOffset, 50);
+      if (session) await enforceMemberRateLimit("profile_preview", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      else await enforcePublicRateLimit("profile_preview_guest", c, Math.max(10, Math.min(30, (await getEffectiveRateLimits()).batch_per_hour)), 60 * 60 * 1000);
+
+      c.header("Content-Type", "application/x-ndjson; charset=utf-8");
+      c.header("Cache-Control", "no-store, no-cache, must-revalidate");
+      c.header("X-Accel-Buffering", "no");
+      c.header("X-Content-Type-Options", "nosniff");
+      const publicRequestUrl = getPublicRequestUrl(c);
+      return stream(c, async (output) => {
+        const writeEvent = async (event: Record<string, unknown>): Promise<void> => {
+          await output.write(`${JSON.stringify(event)}\n`);
+        };
+        try {
+          const data = await buildProfilePreview(homepageUrl, previewLimit, publicRequestUrl, previewOffset, writeEvent);
+          await writeEvent({ type: "done", stage: "completed", data });
+          await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview/stream", status: 200, detail: JSON.stringify({ offset: data.offset, preview_count: data.preview_count, total_count: data.total_count, guest: !session }) });
+        } catch (error) {
+          const serviceError = toServiceError(error);
+          await writeEvent({ type: "error", stage: "failed", code: serviceError.code, message: serviceError.message, detail: serviceError.detail }).catch(() => undefined);
+          await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview/stream", status: serviceError.status, detail: serviceError.detail || serviceError.message });
+        }
+      });
+    } catch (error) {
+      await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview/stream", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });

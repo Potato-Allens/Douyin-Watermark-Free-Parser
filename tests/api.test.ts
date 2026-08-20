@@ -52,6 +52,9 @@ describe("api routes", () => {
     expect(html).toContain('rel="apple-touch-icon" href="/apple-touch-icon.svg"');
     expect(html).toContain('id="profilePreviewList"');
     expect(html).toContain('id="loadMoreProfileBtn"');
+    expect(html).toContain('id="profileFetchProgress"');
+    expect(html).toContain('id="profileProgressBar"');
+    expect(html).toContain("/api/v1/profile/preview/stream");
     expect(html).toContain('id="queuePosition"');
     expect(html).toContain('id="queuePriority"');
     expect(html).toContain('id="centerDownloadBtn"');
@@ -1870,6 +1873,20 @@ describe("api routes", () => {
     expect(guestPreview.status).toBe(200);
     expect(guestPreviewBody.data.preview_count).toBe(1);
     expect(guestPreviewBody.data.items[0].download_url).toContain("/api/v1/download");
+
+    const streamedPreview = await app.request("/api/v1/profile/preview/stream", {
+      method: "POST",
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_PREVIEW", count: 2 }),
+    });
+    const streamEvents = (await streamedPreview.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(streamedPreview.status).toBe(200);
+    expect(streamedPreview.headers.get("content-type")).toContain("application/x-ndjson");
+    expect(streamEvents.map((event) => event.type)).toEqual(["phase", "inspect", "item", "item", "done"]);
+    expect(streamEvents.find((event) => event.type === "inspect").target_count).toBe(2);
+    expect(streamEvents.find((event) => event.type === "done").data.preview_count).toBe(2);
 
     const guestVideos = await app.request("/api/v1/profile/SEC_PREVIEW/videos?count=1");
     const guestVideosBody = await guestVideos.json();

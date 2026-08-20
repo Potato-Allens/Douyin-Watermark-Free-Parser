@@ -6,6 +6,7 @@ const DESKTOP_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
 const MOBILE_PROFILE_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+let profileBrowserQueue: Promise<void> = Promise.resolve();
 
 export interface ProfileInspectResult {
   input_url: string;
@@ -198,6 +199,24 @@ async function fetchProfilePostListViaBrowser(
   resolvedProfileUrl: string,
   options: ProfileInspectOptions,
 ): Promise<{ awemeIds: string[]; totalCount: number | null; hasMore: boolean }> {
+  let releaseQueue!: () => void;
+  const previous = profileBrowserQueue;
+  profileBrowserQueue = new Promise<void>((resolve) => {
+    releaseQueue = resolve;
+  });
+  await previous;
+  try {
+    return await fetchProfilePostListViaBrowserUnlocked(secUserId, resolvedProfileUrl, options);
+  } finally {
+    releaseQueue();
+  }
+}
+
+async function fetchProfilePostListViaBrowserUnlocked(
+  secUserId: string,
+  resolvedProfileUrl: string,
+  options: ProfileInspectOptions,
+): Promise<{ awemeIds: string[]; totalCount: number | null; hasMore: boolean }> {
   const maxItems = clampInt(options.maxItems ?? 20, 1, 1000);
   const timeoutMs = clampInt(options.timeoutMs ?? 35_000, 10_000, 90_000);
   const executablePath = await findProfileChromiumExecutable();
@@ -273,29 +292,37 @@ async function fetchProfilePostListViaBrowser(
       void task.finally(() => pending.delete(task));
     });
 
-    await page.goto(buildIesProfileUrl(secUserId, resolvedProfileUrl), {
-      waitUntil: "commit",
-      timeout: timeoutMs,
-    });
-
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      await page.waitForTimeout(800);
-      if (ids.size >= maxItems) break;
-      if (postResponseSeen && !postHasMore) break;
-      if (postResponseSeen && Date.now() - lastProgressAt > 8_000) break;
-      if (postResponseSeen) {
-        await cdp
-          .send("Input.dispatchMouseEvent", { type: "mouseWheel", x: 680, y: 760, deltaX: 0, deltaY: 2_400 })
-          .catch(() => undefined);
+    const profileUrls = unique([buildIesProfileUrl(secUserId, resolvedProfileUrl), buildCleanIesProfileUrl(secUserId)]);
+    for (const [attempt, profileUrl] of profileUrls.entries()) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await page.goto(profileUrl, { waitUntil: "commit", timeout: Math.max(1_000, remaining) }).catch(() => undefined);
+      const attemptDeadline = attempt === profileUrls.length - 1 ? deadline : Math.min(deadline, Date.now() + 12_000);
+      while (Date.now() < attemptDeadline) {
+        await page.waitForTimeout(800);
+        if (ids.size >= maxItems) break;
+        if (postResponseSeen && !postHasMore) break;
+        if (postResponseSeen && Date.now() - lastProgressAt > 8_000) break;
+        if (postResponseSeen) {
+          await cdp
+            .send("Input.dispatchMouseEvent", { type: "mouseWheel", x: 680, y: 760, deltaX: 0, deltaY: 2_400 })
+            .catch(() => undefined);
+        }
       }
+      if (postResponseSeen || ids.size >= maxItems) break;
     }
     if (pending.size > 0) await Promise.race([Promise.allSettled([...pending]), sleep(9_000)]);
 
+    if (ids.size === 0) {
+      const renderedHtml = await Promise.race([page.content().catch(() => ""), sleep(3_000).then(() => "")]);
+      for (const id of extractAwemeIds(renderedHtml)) ids.set(id, true);
+    }
+
     const allIds = [...ids.keys()];
     const awemeIds = allIds.slice(0, maxItems);
-    if (!postResponseSeen) {
-      throw new DouyinServiceError("FETCH_FAILED", "browser profile collector did not receive the signed works response");
+    if (!postResponseSeen && awemeIds.length === 0) {
+      throw new DouyinServiceError("FETCH_FAILED", "主页采集器没有收到作品列表，已重试备用页面");
     }
     totalCount ??= postHasMore ? null : allIds.length;
     const hasMore = postHasMore || allIds.length > awemeIds.length || (awemeIds.length >= maxItems && totalCount !== null && awemeIds.length < totalCount);
@@ -318,6 +345,10 @@ function buildIesProfileUrl(secUserId: string, resolvedProfileUrl: string): stri
   } catch {
     // Rebuild a clean IES share page URL below.
   }
+  return buildCleanIesProfileUrl(secUserId);
+}
+
+function buildCleanIesProfileUrl(secUserId: string): string {
   const fallback = new URL(`https://www.iesdouyin.com/share/user/${encodeURIComponent(secUserId)}`);
   fallback.searchParams.set("sec_uid", secUserId);
   fallback.searchParams.set("from_ssr", "1");
