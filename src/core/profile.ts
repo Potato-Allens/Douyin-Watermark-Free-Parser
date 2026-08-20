@@ -4,6 +4,8 @@ import type { FetchLike, ParseOptions } from "./types.ts";
 const PROFILE_ALLOWED_HOSTS = ["douyin.com", "iesdouyin.com", "amemv.com"];
 const DESKTOP_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
+const MOBILE_PROFILE_USER_AGENT =
+  "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
 
 export interface ProfileInspectResult {
   input_url: string;
@@ -42,7 +44,7 @@ export async function inspectDouyinProfile(input: string, options: ProfileInspec
       apiError = error;
       if (shouldUseProfileBrowserFallback(options, error)) {
         try {
-          const browserApi = await fetchProfilePostListViaBrowser(secUserId, options);
+          const browserApi = await fetchProfilePostListViaBrowser(secUserId, page.url, options);
           apiIds = browserApi.awemeIds;
           apiTotal = browserApi.totalCount;
           apiHasMore = browserApi.hasMore;
@@ -193,6 +195,7 @@ async function fetchProfilePostPage(
 
 async function fetchProfilePostListViaBrowser(
   secUserId: string,
+  resolvedProfileUrl: string,
   options: ProfileInspectOptions,
 ): Promise<{ awemeIds: string[]; totalCount: number | null; hasMore: boolean }> {
   const maxItems = clampInt(options.maxItems ?? 20, 1, 1000);
@@ -226,9 +229,10 @@ async function fetchProfilePostListViaBrowser(
       ],
     });
     const context = await browser.newContext({
-      userAgent: options.userAgent ?? DESKTOP_USER_AGENT,
+      userAgent: MOBILE_PROFILE_USER_AGENT,
       locale: "zh-CN",
-      viewport: { width: 1365, height: 900 },
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
       serviceWorkers: "block",
     });
     await applyConfiguredProfileCookies(context);
@@ -241,14 +245,15 @@ async function fetchProfilePostListViaBrowser(
 
     page.on("response", (response: any) => {
       const url = response.url();
-      if (!url.includes("/aweme/v1/web/aweme/post/") && !url.includes("/aweme/v1/web/user/profile/other/")) return;
+      const isPostResponse = url.includes("/web/api/v2/aweme/post/") || url.includes("/aweme/v1/web/aweme/post/");
+      if (!isPostResponse && !url.includes("/aweme/v1/web/user/profile/other/")) return;
       const task = (async () => {
         try {
           const text = await Promise.race([response.text(), sleep(5_000).then(() => "")]);
           if (!text.trim()) return;
           const data = JSON.parse(text) as unknown;
           if ((readNumber(data, ["status_code"]) ?? 0) !== 0) return;
-          if (url.includes("/aweme/v1/web/user/profile/other/")) {
+          if (!isPostResponse) {
             totalCount = readNumber(data, ["user", "aweme_count"]) ?? totalCount;
             return;
           }
@@ -268,7 +273,7 @@ async function fetchProfilePostListViaBrowser(
       void task.finally(() => pending.delete(task));
     });
 
-    await page.goto(`https://www.douyin.com/user/${encodeURIComponent(secUserId)}`, {
+    await page.goto(buildIesProfileUrl(secUserId, resolvedProfileUrl), {
       waitUntil: "commit",
       timeout: timeoutMs,
     });
@@ -292,6 +297,7 @@ async function fetchProfilePostListViaBrowser(
     if (!postResponseSeen) {
       throw new DouyinServiceError("FETCH_FAILED", "browser profile collector did not receive the signed works response");
     }
+    totalCount ??= postHasMore ? null : allIds.length;
     const hasMore = postHasMore || allIds.length > awemeIds.length || (awemeIds.length >= maxItems && totalCount !== null && awemeIds.length < totalCount);
     return { awemeIds, totalCount, hasMore };
   } catch (error) {
@@ -301,6 +307,21 @@ async function fetchProfilePostListViaBrowser(
   } finally {
     if (browser) await Promise.race([browser.close().catch(() => undefined), sleep(2_500)]);
   }
+}
+
+function buildIesProfileUrl(secUserId: string, resolvedProfileUrl: string): string {
+  try {
+    const resolved = new URL(resolvedProfileUrl);
+    if ((resolved.hostname === "iesdouyin.com" || resolved.hostname.endsWith(".iesdouyin.com")) && resolved.pathname.includes("/share/user/")) {
+      return resolved.toString();
+    }
+  } catch {
+    // Rebuild a clean IES share page URL below.
+  }
+  const fallback = new URL(`https://www.iesdouyin.com/share/user/${encodeURIComponent(secUserId)}`);
+  fallback.searchParams.set("sec_uid", secUserId);
+  fallback.searchParams.set("from_ssr", "1");
+  return fallback.toString();
 }
 
 function shouldUseProfileBrowserFallback(options: ProfileInspectOptions, error: unknown): boolean {
