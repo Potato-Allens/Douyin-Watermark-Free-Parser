@@ -119,6 +119,7 @@ describe("api routes", () => {
     expect(html).toContain("/api/admin/totp/setup");
     expect(html).toContain('id="totpSecret"');
     expect(html).toContain("/api/admin/dashboard");
+    expect(html).toContain("/api/admin/codes");
     expect(html).toContain("/api/admin/usage/summary");
     expect(html).toContain("/api/admin/security");
     expect(html).toContain("/api/admin/jobs");
@@ -136,6 +137,30 @@ describe("api routes", () => {
     expect(html).toContain('id="mQueue"');
     expect(html).toContain('id="mCapacity"');
     expect(html).not.toContain("???");
+  });
+
+  it("supports documented admin activation-code aliases", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = "codes-alias-admin-token";
+    try {
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), vipStore: await createMemoryVipStore([]), creatorStore: createMemoryCreatorStore() });
+      const headers = { authorization: "Bearer codes-alias-admin-token", "content-type": "application/json" };
+
+      const created = await app.request("/api/admin/activation-codes", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ code: "ALIAS-CODE-1", plan_id: "standard", max_uses: 1 }),
+      });
+      const listed = await app.request("/api/admin/activation-codes?limit=5", { headers: { authorization: "Bearer codes-alias-admin-token" } });
+      const listedBody = await listed.json();
+
+      expect(created.status).toBe(200);
+      expect(listed.status).toBe(200);
+      expect(listedBody.data.some((entry: any) => entry.code === "ALIAS-CODE-1")).toBe(true);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+    }
   });
 
   it("lets admin save advanced Xiaomi/OpenAI-compatible model settings", async () => {
@@ -1096,6 +1121,57 @@ describe("api routes", () => {
     expect(startedBody.data.requested_count).toBe(25);
     expect(startedBody.data.items).toHaveLength(25);
     expect(postCursors).toEqual(["0", "20"]);
+  });
+
+  it("supports documented job aliases for batch creation, items and JSON export", async () => {
+    const store = await createMemoryVipStore(["JOB-ALIAS-1"]);
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/aweme/v1/web/aweme/post/")) {
+        return new Response(JSON.stringify({ total: 1, aweme_list: [{ aweme_id: "7673000000000000001" }] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/user/")) {
+        return new Response(`<html>{"sec_uid":"SEC_ALIAS","aweme_id":"7673000000000000001"}</html>`, {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response(VIDEO_HTML, { headers: { "content-type": "text/html" } });
+    };
+    const app = createApp({ fetcher, vipStore: store, cacheTtlMs: 0 });
+    const register = await app.request("/api/v1/auth/activate-register", {
+      method: "POST",
+      body: JSON.stringify({ code: "JOB-ALIAS-1", username: "job_alias_user", password: "password123" }),
+    });
+    const token = (await register.json()).data.token;
+    const headers = { authorization: `Bearer ${token}` };
+
+    const started = await app.request("/api/v1/jobs/start", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_ALIAS", count: 1, concurrency: 1 }),
+    });
+    const taskId = (await started.json()).data.id;
+    expect(started.status).toBe(200);
+
+    const status = await app.request(`/api/v1/jobs/${taskId}`, { headers });
+    const statusBody = await status.json();
+    expect(status.status).toBe(200);
+    expect(statusBody.data.id).toBe(taskId);
+
+    const items = await app.request(`/api/v1/jobs/${taskId}/items`, { headers });
+    const itemsBody = await items.json();
+    expect(items.status).toBe(200);
+    expect(itemsBody.data.task_id).toBe(taskId);
+    expect(itemsBody.data.items).toHaveLength(1);
+
+    const exported = await app.request(`/api/v1/jobs/${taskId}/export.json`, { headers });
+    const exportedBody = await exported.json();
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get("content-disposition")).toContain(`batch-${taskId}-full-`);
+    expect(exportedBody.task_id).toBe(taskId);
+    expect(exportedBody.items).toHaveLength(1);
   });
 
   it("generates batch AI scripts and exports JSON/text artifacts", async () => {

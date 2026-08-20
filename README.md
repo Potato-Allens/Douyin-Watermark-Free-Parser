@@ -122,6 +122,7 @@ The proxy keeps playback/download same-origin and supports HTTP range requests.
 ```http
 GET  /api/v1/plans
 POST /api/v1/auth/register
+POST /api/v1/auth/activate-register
 POST /api/v1/auth/login
 POST /api/v1/auth/logout
 GET  /api/v1/me
@@ -130,9 +131,13 @@ POST /api/v1/profile/inspect
 GET  /api/v1/profile/:id/videos?count=12&offset=0
 POST /api/v1/profile/preview
 POST /api/v1/batch/start
+POST /api/v1/jobs/start
 GET  /api/v1/batch/tasks
 GET  /api/v1/batch/queue/status
 GET  /api/v1/batch/:id
+GET  /api/v1/jobs/:id
+GET  /api/v1/jobs/:id/items
+GET  /api/v1/jobs/:id/export.json
 GET  /api/v1/batch/:id/jobs
 POST /api/v1/batch/:id/ai
 GET  /api/v1/batch/:id/export?type=json|items_csv|scripts|scripts_csv|covers|covers_zip|comments|comments_csv
@@ -192,6 +197,8 @@ GET  /api/admin/plans
 POST /api/admin/plans
 GET  /api/admin/codes
 POST /api/admin/codes
+GET  /api/admin/activation-codes
+POST /api/admin/activation-codes
 ```
 
 Admin login supports username/password plus Google Authenticator/TOTP. `/api/admin/totp/setup` returns a Base32 secret and `otpauth_uri`; `/api/admin/totp/verify` enables or disables the stored TOTP after code verification. Failed login attempts are locked by IP + username. `/api/admin/dashboard` aggregates online count, adaptive queue capacity, usage summary, rate limits, security policy summary, and recent jobs for the admin overview. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.

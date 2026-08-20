@@ -71,6 +71,7 @@
 - 批量后处理队列已落地：批量 AI 口播文案和批量评论采集支持 `async: true` 加入队列，进度写入批量任务 `post_jobs`，离开页面后回来仍能看到完成进度；并发由 `POST_JOB_MAX_ACTIVE` 控制；后台任务列表会展开每个后处理任务并支持取消 queued/running 状态。
 - 在线人数压力自适应资源已落地：批量解析创建时会根据当前真实在线人数降低 `max_active_tasks` 和全局并发，默认 5 人在线开始进入更保守队列模式；`GET /api/v1/batch/queue/status` 返回 `adaptive` 资源状态。
 - 用户已确认采用方案 A，前台首页继续保持中心视频预览的“抖音沉浸预览版”；后台总览聚合接口 `GET /api/admin/dashboard` 已补齐，可一次返回在线人数、队列压力、调用汇总、限流、安全策略摘要和最近任务。
+- API 文档兼容别名已补齐：`POST /api/v1/auth/activate-register`、`POST /api/v1/jobs/start`、`GET /api/v1/jobs/:id`、`GET /api/v1/jobs/:id/items`、`GET /api/v1/jobs/:id/export.json`、`GET/POST /api/admin/activation-codes` 均会复用现有会员、批量任务和激活码逻辑。
 
 ## 2. 本次确认后的新增需求
 

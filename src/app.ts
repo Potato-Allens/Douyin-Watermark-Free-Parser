@@ -524,7 +524,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.post("/api/v1/auth/register", async (c) => {
+  const handleMemberRegister = async (c: Context) => {
     try {
       const body = await readJsonBody(c);
       const code = asString(body.code);
@@ -542,7 +542,10 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch (error) {
       return jsonError(c, error);
     }
-  });
+  };
+
+  app.post("/api/v1/auth/register", handleMemberRegister);
+  app.post("/api/v1/auth/activate-register", handleMemberRegister);
 
   app.post("/api/v1/auth/login", async (c) => {
     try {
@@ -671,7 +674,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.post("/api/v1/batch/start", async (c) => {
+  const handleBatchStart = async (c: Context, usagePath = "/api/v1/batch/start") => {
     let sessionKey = "unknown";
     try {
       await guardPublicAccess(c, "batch_start");
@@ -700,13 +703,16 @@ export function createApp(options: CreateAppOptions = {}) {
         maxActiveTasks: resourceLimits.max_active_tasks,
         maxGlobalConcurrency: resourceLimits.max_global_concurrency,
       });
-      await recordUsage({ kind: "batch_start", user_key: session.code, ip: getClientIp(c), path: "/api/v1/batch/start", status: 200, detail: JSON.stringify({ task_id: task.id, requested_count: task.requested_count, concurrency: task.concurrency, queue_priority: task.queue_priority, resource_limits: resourceLimits }) });
+      await recordUsage({ kind: "batch_start", user_key: session.code, ip: getClientIp(c), path: usagePath, status: 200, detail: JSON.stringify({ task_id: task.id, requested_count: task.requested_count, concurrency: task.concurrency, queue_priority: task.queue_priority, resource_limits: resourceLimits }) });
       return c.json(success(task));
     } catch (error) {
-      await recordUsage({ kind: "batch_start", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/batch/start", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      await recordUsage({ kind: "batch_start", user_key: sessionKey, ip: getClientIp(c), path: usagePath, status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
-  });
+  };
+
+  app.post("/api/v1/batch/start", (c) => handleBatchStart(c));
+  app.post("/api/v1/jobs/start", (c) => handleBatchStart(c, "/api/v1/jobs/start"));
 
   app.get("/api/v1/batch/tasks", async (c) => {
     try {
@@ -724,14 +730,41 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.get("/api/v1/batch/:id", async (c) => {
+  const getOwnedBatchTaskForRequest = async (c: Context) => {
+    const session = await requireVip(c, await getStore());
+    const taskId = asString(c.req.param("id"));
+    if (!taskId) throw new DouyinServiceError("MISSING_URL", "task id is required", 400);
+    const task = await getBatchTask(taskId);
+    if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
+    assertBatchTaskAccess(task, session);
+    return task;
+  };
+
+  const handleBatchStatus = async (c: Context, guardKind = "batch_status") => {
     try {
-      await guardPublicAccess(c, "batch_status");
-      const session = await requireVip(c, await getStore());
-      const task = await getBatchTask(c.req.param("id"));
-      if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
-      assertBatchTaskAccess(task, session);
-      return c.json(success(task));
+      await guardPublicAccess(c, guardKind);
+      return c.json(success(await getOwnedBatchTaskForRequest(c)));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  };
+
+  app.get("/api/v1/batch/:id", (c) => handleBatchStatus(c));
+  app.get("/api/v1/jobs/:id", (c) => handleBatchStatus(c, "job_status"));
+  app.get("/api/v1/jobs/:id/items", async (c) => {
+    try {
+      await guardPublicAccess(c, "job_items");
+      const task = await getOwnedBatchTaskForRequest(c);
+      return c.json(success({ task_id: task.id, status: task.status, total: task.items.length, items: task.items }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+  app.get("/api/v1/jobs/:id/export.json", async (c) => {
+    try {
+      await guardPublicAccess(c, "job_export_json");
+      const task = await getOwnedBatchTaskForRequest(c);
+      return await batchExportResponse(task, "json", parserOptions.fetcher);
     } catch (error) {
       return jsonError(c, error);
     }
@@ -1671,7 +1704,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.get("/api/admin/codes", async (c) => {
+  const handleAdminCodesList = async (c: Context) => {
     try {
       requireAdmin(c, adminSessions);
       const requestUrl = new URL(c.req.url);
@@ -1680,9 +1713,9 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch (error) {
       return jsonError(c, error);
     }
-  });
+  };
 
-  app.post("/api/admin/codes", async (c) => {
+  const handleAdminCodeCreate = async (c: Context) => {
     const store = await creatorStorePromise;
     try {
       requireAdmin(c, adminSessions, { mutation: true });
@@ -1700,7 +1733,12 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch (error) {
       return jsonError(c, error);
     }
-  });
+  };
+
+  app.get("/api/admin/codes", handleAdminCodesList);
+  app.get("/api/admin/activation-codes", handleAdminCodesList);
+  app.post("/api/admin/codes", handleAdminCodeCreate);
+  app.post("/api/admin/activation-codes", handleAdminCodeCreate);
 
   app.get("/favicon.svg", (c) =>
     c.body(FAVICON_SVG, 200, {
