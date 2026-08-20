@@ -55,7 +55,7 @@ FFMPEG_PATH=/usr/bin/ffmpeg
 FFMPEG_TIMEOUT_MS=120000
 ```
 
-`ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty and TOTP has never been bound, the `/admin` login page can generate the first scan QR after the admin username/password is verified; scan it, enter the 6-digit code, and the page will enable TOTP and sign in. After TOTP is enabled, displaying an existing QR/secret requires the current 6-digit code. Unauthenticated visitors receive only the login page; the backend workspace is rendered after a valid cookie login.
+`ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty and TOTP has never been bound, the `/admin` login page can generate a one-time scan QR after the admin username/password is verified; scan it and enter the 6-digit code to bind TOTP and sign in. After binding, the setup area is hidden and the API no longer returns or regenerates the QR/secret. Resetting a lost authenticator must be performed directly on the server rather than through the web console. Unauthenticated visitors receive only the login page; the backend workspace is rendered after a valid cookie login.
 
 Homepage works and real comment viewing/export first try the lightweight HTTP interface. If Douyin returns an empty anti-bot response, Node automatically falls back to a headless Chromium page and captures the browser-generated signed response. Install Chromium on Linux and set `DOUYIN_CHROMIUM_PATH` when it is not in a standard path:
 

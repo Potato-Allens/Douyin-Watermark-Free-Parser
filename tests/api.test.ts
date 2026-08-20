@@ -511,12 +511,15 @@ describe("api routes", () => {
       expect(enabled.status).toBe(200);
       expect(enabledBody.data.enabled).toBe(true);
       expect(enabledBody.data.secret_masked).toContain("****");
-      expect(enabledBody.data.qr_svg).toContain("<svg");
+      expect(enabledBody.data.qr_svg).toBeNull();
 
       const loadedAfterEnable = await app.request("/api/admin/totp", { headers: adminHeaders });
       const loadedAfterEnableBody = await loadedAfterEnable.json();
-      expect(loadedAfterEnableBody.data.otpauth_uri).toContain("otpauth://totp/");
-      expect(loadedAfterEnableBody.data.qr_svg).toContain("<svg");
+      expect(loadedAfterEnableBody.data.otpauth_uri).toBeNull();
+      expect(loadedAfterEnableBody.data.qr_svg).toBeNull();
+
+      const setupStatus = await app.request("/api/admin/totp/bootstrap/status");
+      expect((await setupStatus.json()).data.setup_available).toBe(false);
 
       const exposedWithoutSecondFactor = await app.request("/api/admin/totp/bootstrap", {
         method: "POST",
@@ -524,7 +527,7 @@ describe("api routes", () => {
         body: JSON.stringify({ username: "admin", password: "totp-password" }),
       });
       const exposedWithoutSecondFactorText = await exposedWithoutSecondFactor.text();
-      expect(exposedWithoutSecondFactor.status).toBe(403);
+      expect(exposedWithoutSecondFactor.status).toBe(409);
       expect(exposedWithoutSecondFactorText).not.toContain(setupBody.data.secret);
       expect(exposedWithoutSecondFactorText).not.toContain("otpauth://totp/");
 
@@ -533,8 +536,14 @@ describe("api routes", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "admin", password: "totp-password", totp: currentTotpCode(setupBody.data.secret) }),
       });
-      expect(existingQrWithSecondFactor.status).toBe(200);
-      expect((await existingQrWithSecondFactor.json()).data.qr_svg).toContain("<svg");
+      expect(existingQrWithSecondFactor.status).toBe(409);
+
+      const secondSetup = await app.request("/api/admin/totp/setup", {
+        method: "POST",
+        headers: adminHeaders,
+        body: JSON.stringify({ issuer: "抖映灵感台", account: "admin" }),
+      });
+      expect(secondSetup.status).toBe(409);
 
       const loginWithoutTotp = await app.request("/api/admin/login", {
         method: "POST",
@@ -557,13 +566,12 @@ describe("api routes", () => {
         headers: adminHeaders,
         body: JSON.stringify({ enabled: false }),
       });
-      expect(disabled.status).toBe(200);
-      expect((await disabled.json()).data.enabled).toBe(false);
+      expect(disabled.status).toBe(409);
 
       const audit = await app.request("/api/admin/audit-logs?limit=10", { headers: adminHeaders });
       const auditBody = await audit.json();
       expect(auditBody.data.some((entry: any) => entry.action === "admin_totp_enable")).toBe(true);
-      expect(auditBody.data.some((entry: any) => entry.action === "admin_totp_disable")).toBe(true);
+      expect(auditBody.data.some((entry: any) => entry.action === "admin_totp_disable")).toBe(false);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;

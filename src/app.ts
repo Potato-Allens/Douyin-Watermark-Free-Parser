@@ -1589,6 +1589,15 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/admin/totp/bootstrap/status", async (c) => {
+    try {
+      const current = await getEffectiveAdminTotp();
+      return c.json(success({ setup_available: !current.enabled }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.post("/api/admin/totp/bootstrap", async (c) => {
     const store = await creatorStorePromise;
     const ip = getClientIp(c);
@@ -1605,18 +1614,16 @@ export function createApp(options: CreateAppOptions = {}) {
       const requestedIssuer = asString(body.issuer) ?? "抖映灵感台";
       const requestedAccount = asString(body.account) ?? username ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
       const current = await getEffectiveAdminTotp();
-      if (current.enabled && current.secret && !(await verifyTotpCode(current.secret, asString(body.totp)))) {
-        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp code is required to display an existing binding", 403);
-      }
+      if (current.enabled) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp is already bound", 409);
       clearAdminLoginFailure(loginKey);
-      const secret = normalizeTotpSecret(current.secret) ?? generateTotpSecret();
-      const issuer = current.enabled && current.issuer ? current.issuer : requestedIssuer;
-      const account = current.enabled && current.account ? current.account : requestedAccount;
+      const secret = generateTotpSecret();
+      const issuer = requestedIssuer;
+      const account = requestedAccount;
       const otpauth_uri = buildOtpAuthUri({ issuer, account, secret });
       const qr_svg = await buildQrSvg(otpauth_uri);
       await store.recordAudit({
         actor: username ?? "admin",
-        action: current.enabled ? "admin_totp_bootstrap_existing_qr" : "admin_totp_bootstrap_setup_qr",
+        action: "admin_totp_bootstrap_setup_qr",
         ip,
         detail: JSON.stringify({ issuer, account, source: current.source, enabled: current.enabled }),
       });
@@ -1631,7 +1638,7 @@ export function createApp(options: CreateAppOptions = {}) {
           account,
           otpauth_uri,
           qr_svg,
-          next: current.enabled ? "scan_and_login" : "scan_and_verify",
+          next: "scan_and_verify",
         }),
       );
     } catch (error) {
@@ -1663,7 +1670,8 @@ export function createApp(options: CreateAppOptions = {}) {
       assertAdminPassword(username, password);
 
       const current = await getEffectiveAdminTotp();
-      const secret = normalizeTotpSecret(current.secret) ?? normalizeTotpSecret(body.secret);
+      if (current.enabled) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp is already bound", 409);
+      const secret = normalizeTotpSecret(body.secret);
       const code = asString(body.code);
       if (!secret) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp secret is required", 400);
       if (!(await verifyTotpCode(secret, code))) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp code is invalid", 403);
@@ -1686,8 +1694,6 @@ export function createApp(options: CreateAppOptions = {}) {
       appendSetCookies(c, [buildAdminCookie(token, 8 * 60 * 60, getPublicRequestUrl(c)), buildCsrfCookie("admin_csrf", csrfToken, 8 * 60 * 60, getPublicRequestUrl(c))]);
       const resolvedIssuer = saved?.issuer ?? issuer;
       const resolvedAccount = saved?.account ?? account;
-      const otpauth_uri = buildOtpAuthUri({ issuer: resolvedIssuer, account: resolvedAccount, secret });
-      const qr_svg = await buildQrSvg(otpauth_uri);
       await store.recordAudit({ actor: username ?? "admin", action: "admin_totp_bootstrap_verify", ip, detail: JSON.stringify({ issuer: resolvedIssuer, account: resolvedAccount, source: envTotp ? "env" : "store" }) });
       return c.json(
         success({
@@ -1699,8 +1705,8 @@ export function createApp(options: CreateAppOptions = {}) {
           secret_masked: maskTotpSecret(secret),
           issuer: resolvedIssuer,
           account: resolvedAccount,
-          otpauth_uri,
-          qr_svg,
+          otpauth_uri: null,
+          qr_svg: null,
         }),
       );
     } catch (error) {
@@ -1721,10 +1727,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/admin/totp", async (c) => {
     try {
       requireAdmin(c, adminSessions);
-      const { secret, ...data } = await getEffectiveAdminTotp();
-      const otpauth_uri = secret ? buildOtpAuthUri({ issuer: data.issuer ?? "抖映灵感台", account: data.account ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin"), secret }) : null;
-      const qr_svg = otpauth_uri ? await buildQrSvg(otpauth_uri) : null;
-      return c.json(success({ ...data, otpauth_uri, qr_svg }));
+      const { secret: _secret, ...data } = await getEffectiveAdminTotp();
+      return c.json(success({ ...data, otpauth_uri: null, qr_svg: null }));
     } catch (error) {
       return jsonError(c, error);
     }
@@ -1734,6 +1738,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = await creatorStorePromise;
     try {
       requireAdmin(c, adminSessions, { mutation: true });
+      const current = await getEffectiveAdminTotp();
+      if (current.enabled) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp is already bound", 409);
       const body = await readJsonBody(c);
       const issuer = asString(body.issuer) ?? "抖映灵感台";
       const account = asString(body.account) ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
@@ -1751,6 +1757,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = await creatorStorePromise;
     try {
       requireAdmin(c, adminSessions, { mutation: true });
+      const current = await getEffectiveAdminTotp();
+      if (current.enabled) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp is already bound", 409);
       const body = await readJsonBody(c);
       if (body.enabled === false || body.disable === true) {
         if (normalizeTotpSecret(getRuntimeEnv().ADMIN_TOTP_SECRET)) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "ADMIN_TOTP_SECRET is configured in environment", 409);
@@ -1765,10 +1773,8 @@ export function createApp(options: CreateAppOptions = {}) {
       const issuer = asString(body.issuer) ?? "抖映灵感台";
       const account = asString(body.account) ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
       const data = await store.saveAdminTotpSettings({ enabled: true, secret, issuer, account });
-      const otpauth_uri = buildOtpAuthUri({ issuer, account, secret });
-      const qr_svg = await buildQrSvg(otpauth_uri);
       await store.recordAudit({ actor: "admin", action: "admin_totp_enable", ip: getClientIp(c), detail: JSON.stringify({ issuer, account }) });
-      return c.json(success({ ...data, source: "store", configurable: true, otpauth_uri, qr_svg }));
+      return c.json(success({ ...data, source: "store", configurable: true, otpauth_uri: null, qr_svg: null }));
     } catch (error) {
       return jsonError(c, error);
     }
