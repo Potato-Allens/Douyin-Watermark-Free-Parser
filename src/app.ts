@@ -24,6 +24,7 @@ import {
   toServiceError,
 } from "./core/index.ts";
 import type { ApiSuccessResponse, BatchComment, BatchItem, BatchPostJob, BatchTask, CreatorStore, FetchLike, MemberSession, ParseOptions, ParsedDouyinInfo, SecuritySettings, UsageLogEntry, VipSession, VipStore } from "./core/index.ts";
+import { renderAdminLoginPage } from "./admin-login-ui.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import { renderDesignsPage } from "./designs-ui.ts";
 import { renderHomePage } from "./ui.ts";
@@ -40,6 +41,27 @@ export interface CreateAppOptions {
 
 export function createApp(options: CreateAppOptions = {}) {
   const app = new Hono();
+
+  app.use("/admin", async (c, next) => {
+    await next();
+    c.header("Cache-Control", "no-store, private, max-age=0");
+    c.header("Pragma", "no-cache");
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("X-Frame-Options", "DENY");
+    c.header("Referrer-Policy", "no-referrer");
+    c.header("Cross-Origin-Opener-Policy", "same-origin");
+    c.header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+    c.header("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; connect-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+  });
+
+  app.use("/api/admin/*", async (c, next) => {
+    await next();
+    c.header("Cache-Control", "no-store, private, max-age=0");
+    c.header("Pragma", "no-cache");
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("X-Frame-Options", "DENY");
+    c.header("Referrer-Policy", "no-referrer");
+  });
 
   const parserOptions: ParseOptions = {
     ...options.parserOptions,
@@ -395,7 +417,16 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.get("/admin", (c) => c.html(renderAdminPage()));
+  app.get("/admin", (c) => {
+    const expiresAt = getValidAdminCookieSession(c.req.raw, adminSessions);
+    if (!expiresAt) {
+      if (readCookieValue(c.req.raw, "admin_token") || readCookieValue(c.req.raw, "admin_csrf")) {
+        appendSetCookies(c, [clearAdminCookie(getPublicRequestUrl(c)), clearCsrfCookie("admin_csrf", getPublicRequestUrl(c))]);
+      }
+      return c.html(renderAdminLoginPage());
+    }
+    return c.html(renderAdminPage());
+  });
 
   app.get("/designs", (c) => c.html(renderDesignsPage()));
 
@@ -1264,30 +1295,26 @@ export function createApp(options: CreateAppOptions = {}) {
     let username: string | null = null;
     let loginKey = adminLoginKey(ip, null);
     try {
-      const body = await readJsonBody(c);
+      const body = await readAdminAuthBody(c);
       username = asString(body.username);
       const password = asString(body.password);
       const totp = asString(body.totp);
       loginKey = adminLoginKey(ip, username);
       assertAdminLoginAllowed(loginKey);
-      const env = getRuntimeEnv();
-      const expectedUser = env.ADMIN_USERNAME ?? "admin";
-      const expectedPassword = env.ADMIN_PASSWORD;
-      if (!expectedPassword) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin password is not configured", 503);
-      if (username !== expectedUser || password !== expectedPassword) {
-        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin credentials are invalid", 403);
-      }
+      assertAdminPassword(username, password);
       const adminTotp = await getEffectiveAdminTotp();
       if (adminTotp.secret && !(await verifyTotpCode(adminTotp.secret, totp))) {
         throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin totp code is invalid", 403);
       }
       clearAdminLoginFailure(loginKey);
+      const previousToken = readCookieValue(c.req.raw, "admin_token");
+      if (previousToken) adminSessions.delete(previousToken);
       const token = randomId();
       const expiresAt = Date.now() + 8 * 60 * 60 * 1000;
       adminSessions.set(token, expiresAt);
       const csrfToken = randomId();
       appendSetCookies(c, [buildAdminCookie(token, 8 * 60 * 60, getPublicRequestUrl(c)), buildCsrfCookie("admin_csrf", csrfToken, 8 * 60 * 60, getPublicRequestUrl(c))]);
-      await store.recordAudit({ actor: username, action: "admin_login", ip, detail: "success" });
+      await store.recordAudit({ actor: username ?? "admin", action: "admin_login", ip, detail: "success" });
       return c.json(success({ token, csrf_token: csrfToken, expires_at: new Date(expiresAt).toISOString(), totp_enabled: adminTotp.enabled, totp_source: adminTotp.source }));
     } catch (error) {
       const serviceError = toServiceError(error);
@@ -1309,23 +1336,40 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.post("/api/admin/logout", async (c) => {
+    const store = await creatorStorePromise;
+    const auth = readAdminAuth(c.req.raw);
+    try {
+      requireAdmin(c, adminSessions, { mutation: true });
+      if (auth.token && auth.source === "cookie") adminSessions.delete(auth.token);
+      appendSetCookies(c, [clearAdminCookie(getPublicRequestUrl(c)), clearCsrfCookie("admin_csrf", getPublicRequestUrl(c))]);
+      await store.recordAudit({ actor: "admin", action: "admin_logout", ip: getClientIp(c), detail: "session revoked" });
+      return c.json(success({ logged_out: true }));
+    } catch (error) {
+      return jsonError(c, error);
+    }
+  });
+
   app.post("/api/admin/totp/bootstrap", async (c) => {
     const store = await creatorStorePromise;
     const ip = getClientIp(c);
     let username: string | null = null;
     let loginKey = adminLoginKey(ip, null);
     try {
-      const body = await readJsonBody(c);
+      const body = await readAdminAuthBody(c);
       username = asString(body.username);
       const password = asString(body.password);
       loginKey = adminLoginKey(ip, username);
       assertAdminLoginAllowed(loginKey);
       assertAdminPassword(username, password);
-      clearAdminLoginFailure(loginKey);
 
       const requestedIssuer = asString(body.issuer) ?? "抖映灵感台";
       const requestedAccount = asString(body.account) ?? username ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
       const current = await getEffectiveAdminTotp();
+      if (current.enabled && current.secret && !(await verifyTotpCode(current.secret, asString(body.totp)))) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp code is required to display an existing binding", 403);
+      }
+      clearAdminLoginFailure(loginKey);
       const secret = normalizeTotpSecret(current.secret) ?? generateTotpSecret();
       const issuer = current.enabled && current.issuer ? current.issuer : requestedIssuer;
       const account = current.enabled && current.account ? current.account : requestedAccount;
@@ -1353,7 +1397,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     } catch (error) {
       const serviceError = toServiceError(error);
-      const loginFailed = serviceError.status === 403 && /credentials/.test(serviceError.detail);
+      const loginFailed = serviceError.status === 403 && /credentials|totp/.test(serviceError.detail);
       const locked = serviceError.status === 429 && serviceError.detail.includes("temporarily locked");
       const failure = loginFailed ? recordAdminLoginFailure(loginKey) : null;
       await store.recordAudit({
@@ -1372,7 +1416,7 @@ export function createApp(options: CreateAppOptions = {}) {
     let username: string | null = null;
     let loginKey = adminLoginKey(ip, null);
     try {
-      const body = await readJsonBody(c);
+      const body = await readAdminAuthBody(c);
       username = asString(body.username);
       const password = asString(body.password);
       loginKey = adminLoginKey(ip, username);
@@ -1394,6 +1438,8 @@ export function createApp(options: CreateAppOptions = {}) {
       }
 
       clearAdminLoginFailure(loginKey);
+      const previousToken = readCookieValue(c.req.raw, "admin_token");
+      if (previousToken) adminSessions.delete(previousToken);
       const token = randomId();
       const expiresAt = Date.now() + 8 * 60 * 60 * 1000;
       adminSessions.set(token, expiresAt);
@@ -2587,6 +2633,29 @@ async function requireVip(c: Context, store: VipStore, options: { mutation?: boo
   return session;
 }
 
+async function readAdminAuthBody(c: Context): Promise<Record<string, unknown>> {
+  const maxBytes = 8 * 1024;
+  const contentType = (c.req.header("content-type") ?? "").split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/json") {
+    throw new DouyinServiceError("UNSUPPORTED_CONTENT", "content-type must be application/json", 415);
+  }
+  const declaredLength = Number(c.req.header("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new DouyinServiceError("UNSUPPORTED_CONTENT", "request body is too large", 413);
+  }
+  const text = await c.req.text();
+  if (new TextEncoder().encode(text).byteLength > maxBytes) {
+    throw new DouyinServiceError("UNSUPPORTED_CONTENT", "request body is too large", 413);
+  }
+  if (!text.trim()) return {};
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  } catch {
+    throw new DouyinServiceError("PARSE_FAILED", "invalid json body", 400);
+  }
+}
+
 function isMemberSession(session: VipSession | MemberSession | null | undefined): session is MemberSession {
   return Boolean(session && "user_id" in session && "plan" in session);
 }
@@ -2677,7 +2746,9 @@ function assertAdminPassword(username: string | null | undefined, password: stri
   const expectedUser = env.ADMIN_USERNAME ?? "admin";
   const expectedPassword = env.ADMIN_PASSWORD;
   if (!expectedPassword) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin password is not configured", 503);
-  if (username !== expectedUser || password !== expectedPassword) {
+  const usernameMatches = constantTimeStringEqual(username ?? "", expectedUser);
+  const passwordMatches = constantTimeStringEqual(password ?? "", expectedPassword);
+  if (!usernameMatches || !passwordMatches) {
     throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin credentials are invalid", 403);
   }
 }
@@ -2695,6 +2766,15 @@ function requireAdmin(c: Context, sessions: Map<string, number>, options: { muta
     if (expiresAt) sessions.delete(auth.token);
   }
   throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin login is required", 403);
+}
+
+function getValidAdminCookieSession(request: Request, sessions: Map<string, number>): number | null {
+  const token = readCookieValue(request, "admin_token");
+  if (!token) return null;
+  const expiresAt = sessions.get(token);
+  if (expiresAt && expiresAt > Date.now()) return expiresAt;
+  if (expiresAt) sessions.delete(token);
+  return null;
 }
 
 function readAdminAuth(request: Request): { token: string | null; source: TokenSource | null } {
@@ -2731,9 +2811,9 @@ function enforceCsrf(c: Context, cookieName: "vip_csrf" | "admin_csrf"): void {
 }
 
 function constantTimeStringEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let index = 0; index < a.length; index += 1) diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  const length = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let index = 0; index < length; index += 1) diff |= (a.charCodeAt(index) || 0) ^ (b.charCodeAt(index) || 0);
   return diff === 0;
 }
 
@@ -2754,6 +2834,11 @@ function clearVipCookie(requestUrl: string): string {
 function buildAdminCookie(token: string, maxAge: number, requestUrl: string): string {
   const secure = new URL(requestUrl).protocol === "https:" ? "; Secure" : "";
   return `admin_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+}
+
+function clearAdminCookie(requestUrl: string): string {
+  const secure = new URL(requestUrl).protocol === "https:" ? "; Secure" : "";
+  return `admin_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
 }
 
 function buildCsrfCookie(name: "vip_csrf" | "admin_csrf", token: string, maxAge: number, requestUrl: string): string {

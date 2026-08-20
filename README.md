@@ -15,7 +15,7 @@ A lightweight Douyin parsing service with a Douyin-style creator workspace, norm
 - Async batch post-processing queue for batch AI copywriting and batch comment fetching for viewing/export; progress is persisted in each batch task.
 - Single-video comments view/export, plus batch-task comments view/export.
 - Transcript-draft parsing plus Xiaomi/OpenAI-compatible AI copywriting for scripts, rewrites, titles, descriptions, and tags.
-- Admin console `/admin` with password + Google Authenticator/TOTP self-service setup, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
+- Admin console `/admin` with a server-gated login entry, HttpOnly cookie session, password + Google Authenticator/TOTP self-service setup, model config, timeout/max tokens/temperature controls, plan config, activation codes, metrics, usage logs, and audit logs.
 - Admin login failed-attempt lockout with `admin_login_failed` and `admin_login_locked` audit records.
 - Cookie-session mutations use double-submit CSRF tokens; bearer-token API calls remain supported for the web UI and server-side operation.
 - Rate-limit interceptions are recorded in usage logs and audit logs as `rate_limit_block`.
@@ -41,6 +41,7 @@ Run checks:
 pnpm test
 pnpm build
 pnpm smoke:node
+pnpm smoke:admin
 ```
 
 ## Pages
@@ -172,6 +173,7 @@ Content-Type: application/json
 ```http
 GET  /admin
 POST /api/admin/login
+POST /api/admin/logout
 GET  /api/admin/totp
 POST /api/admin/totp/setup
 POST /api/admin/totp/verify
@@ -203,7 +205,7 @@ GET  /api/admin/activation-codes
 POST /api/admin/activation-codes
 ```
 
-Admin login supports username/password plus Google Authenticator/TOTP. If the admin cannot log in because no authenticator has been scanned yet, `/api/admin/totp/bootstrap` can generate the QR after username/password verification, and `/api/admin/totp/bootstrap/verify` verifies the 6-digit code, enables TOTP, and returns an admin session. Logged-in admins can still use `/api/admin/totp/setup` and `/api/admin/totp/verify` to rotate, enable, or disable stored TOTP. Failed login attempts are locked by IP + username. `/api/admin/dashboard` aggregates online count, adaptive queue capacity, usage summary, rate limits, security policy summary, and recent jobs for the admin overview. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
+Admin login supports username/password plus Google Authenticator/TOTP. Before authentication, `GET /admin` returns only the dedicated login page; the backend workspace markup is rendered only for a valid server-side cookie session. If no authenticator has been bound yet, `/api/admin/totp/bootstrap` can generate the first QR after username/password verification, and `/api/admin/totp/bootstrap/verify` verifies the 6-digit code, enables TOTP, and creates the admin session. Once TOTP is enabled, reading an existing QR/secret also requires the current 6-digit code. Logged-in admins can use `/api/admin/totp/setup` and `/api/admin/totp/verify` to rotate, enable, or disable stored TOTP, and `/api/admin/logout` revokes the server session. Cookie mutations require CSRF, failed login attempts are locked by IP + username, auth request bodies are JSON-only and size-limited, and admin pages/responses are marked `no-store`. `/api/admin/dashboard` aggregates online count, adaptive queue capacity, usage summary, rate limits, security policy summary, and recent jobs for the admin overview. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
 
 ## Environment Variables
 

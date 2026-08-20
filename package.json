@@ -19,6 +19,7 @@
     "verify": "tsx scripts/verify.ts",
     "smoke": "tsx scripts/real-smoke.ts",
     "smoke:node": "tsx scripts/node-smoke.ts",
+    "smoke:admin": "tsx scripts/admin-auth-smoke.ts",
     "smoke:real": "tsx scripts/real-smoke.ts",
     "smoke:image-real": "tsx scripts/image-real-smoke.ts",
     "smoke:server-real": "tsx scripts/server-real-smoke.ts",

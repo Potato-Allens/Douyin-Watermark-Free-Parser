@@ -114,49 +114,124 @@ describe("api routes", () => {
     expect(html).toContain("choice");
   });
 
-  it("renders clean admin console with management controls", async () => {
+  it("serves only the dedicated login entry before admin authentication", async () => {
     const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore: createMemoryCreatorStore() });
     const response = await app.request("/admin");
     const html = await response.text();
 
     expect(response.status).toBe(200);
-    expect(html).toContain("&#25238;&#26144;&#28789;&#24863;&#21488;&#21518;&#21488;");
-    expect(html).toContain("/api/admin/rate-limits");
-    expect(html).toContain("/api/admin/totp/setup");
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("x-frame-options")).toBe("DENY");
+    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(html).toContain('id="loginForm"');
+    expect(html).toContain("/api/admin/login");
     expect(html).toContain("/api/admin/totp/bootstrap");
-    expect(html).toContain('id="totpSecret"');
     expect(html).toContain('id="totpQr"');
-    expect(html).toContain("&#29983;&#25104;&#20108;&#32500;&#30721;");
-    expect(html).not.toContain("Google Authenticator");
-    expect(html).not.toContain("Setup TOTP");
-    expect(html).toContain("/api/admin/dashboard");
-    expect(html).toContain("/api/admin/codes");
-    expect(html).toContain("/api/admin/usage/summary");
-    expect(html).toContain("/api/admin/security");
-    expect(html).toContain("/api/admin/jobs");
-    expect(html).toContain("/post-jobs/");
-    expect(html).toContain("data-post-cancel");
-    expect(html).toContain("/api/admin/users");
-    expect(html).toContain('id="usageSummaryList"');
-    expect(html).toContain('rel="manifest" href="/site.webmanifest"');
-    expect(html).toContain('id="planBatchAi"');
-    expect(html).toContain('id="planCommentExport"');
-    expect(html).toContain('id="planCoverDownload"');
-    expect(html).toContain('id="llmTimeout"');
-    expect(html).toContain('id="llmMaxTokens"');
-    expect(html).toContain('id="llmTemperature"');
-    expect(html).toContain('id="mQueue"');
-    expect(html).toContain('id="mCapacity"');
-    expect(html).toContain('class="tab-nav"');
-    expect(html).toContain('data-tab="overview"');
-    expect(html).toContain('data-tab="auth"');
-    expect(html).toContain('id="tab-security" class="tab-panel"');
-    expect(html).toContain("function switchTab(name)");
-    expect(html).not.toContain('<div class="card">');
+    expect(html).not.toContain('class="tab-nav"');
+    expect(html).not.toContain('id="mQueue"');
+    expect(html).not.toContain("/api/admin/dashboard");
+    expect(html).not.toContain("/api/admin/jobs");
+    expect(html).not.toContain("/api/admin/security");
+    expect(html).not.toContain("/api/admin/settings/llm");
     const inlineScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(inlineScript).toBeTruthy();
     expect(() => new Function(inlineScript!)).not.toThrow();
     expect(html).not.toContain("???");
+  });
+
+  it("clears stale admin cookies and rejects malformed or oversized login bodies", async () => {
+    const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore: createMemoryCreatorStore() });
+    const stale = await app.request("/admin", { headers: { cookie: "admin_token=stale; admin_csrf=stale-csrf" } });
+    const staleHtml = await stale.text();
+    expect(stale.status).toBe(200);
+    expect(staleHtml).toContain('id="loginForm"');
+    expect(stale.headers.get("set-cookie")).toContain("admin_token=;");
+    expect(stale.headers.get("set-cookie")).toContain("Max-Age=0");
+
+    const wrongType = await app.request("/api/admin/login", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ username: "admin", password: "x" }),
+    });
+    expect(wrongType.status).toBe(415);
+    expect(wrongType.headers.get("cache-control")).toContain("no-store");
+
+    const oversized = await app.request("/api/admin/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "admin", password: "x".repeat(9 * 1024) }),
+    });
+    expect(oversized.status).toBe(413);
+  });
+
+  it("serves the admin workspace only after a valid cookie login", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    const oldUser = process.env.ADMIN_USERNAME;
+    const oldPassword = process.env.ADMIN_PASSWORD;
+    const oldTotp = process.env.ADMIN_TOTP_SECRET;
+    delete process.env.ADMIN_TOKEN;
+    process.env.ADMIN_USERNAME = "admin";
+    process.env.ADMIN_PASSWORD = "workspace-admin-password";
+    delete process.env.ADMIN_TOTP_SECRET;
+    try {
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore: createMemoryCreatorStore() });
+      const login = await app.request("/api/admin/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "workspace-admin-password" }),
+      });
+      const loginBody = await login.json();
+      const cookie = `admin_token=${loginBody.data.token}; admin_csrf=${loginBody.data.csrf_token}`;
+      const response = await app.request("/admin", { headers: { cookie } });
+      const html = await response.text();
+
+      expect(login.status).toBe(200);
+      expect(response.status).toBe(200);
+      expect(html).toContain("&#25238;&#26144;&#28789;&#24863;&#21488;&#21518;&#21488;");
+      expect(html).toContain("/api/admin/rate-limits");
+      expect(html).toContain("/api/admin/totp/setup");
+      expect(html).not.toContain("/api/admin/totp/bootstrap");
+      expect(html).toContain("/api/admin/dashboard");
+      expect(html).toContain("/api/admin/codes");
+      expect(html).toContain("/api/admin/usage/summary");
+      expect(html).toContain("/api/admin/security");
+      expect(html).toContain("/api/admin/jobs");
+      expect(html).toContain("/post-jobs/");
+      expect(html).toContain("data-post-cancel");
+      expect(html).toContain("/api/admin/users");
+      expect(html).toContain('id="usageSummaryList"');
+      expect(html).toContain('rel="manifest" href="/site.webmanifest"');
+      expect(html).toContain('id="planBatchAi"');
+      expect(html).toContain('id="planCommentExport"');
+      expect(html).toContain('id="planCoverDownload"');
+      expect(html).toContain('id="llmTimeout"');
+      expect(html).toContain('id="llmMaxTokens"');
+      expect(html).toContain('id="llmTemperature"');
+      expect(html).toContain('id="mQueue"');
+      expect(html).toContain('id="mCapacity"');
+      expect(html).toContain('class="tab-nav"');
+      expect(html).toContain('data-tab="overview"');
+      expect(html).toContain('data-tab="auth"');
+      expect(html).toContain('id="tab-security" class="tab-panel"');
+      expect(html).toContain("function switchTab(name)");
+      expect(html).toContain("/api/admin/logout");
+      expect(html).not.toContain('id="loginForm"');
+      expect(html).not.toContain("localStorage.getItem('admin_token')");
+      expect(html).not.toContain('<div class="card">');
+      const inlineScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+      expect(inlineScript).toBeTruthy();
+      expect(() => new Function(inlineScript!)).not.toThrow();
+      expect(html).not.toContain("???");
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+      if (oldUser === undefined) delete process.env.ADMIN_USERNAME;
+      else process.env.ADMIN_USERNAME = oldUser;
+      if (oldPassword === undefined) delete process.env.ADMIN_PASSWORD;
+      else process.env.ADMIN_PASSWORD = oldPassword;
+      if (oldTotp === undefined) delete process.env.ADMIN_TOTP_SECRET;
+      else process.env.ADMIN_TOTP_SECRET = oldTotp;
+    }
   });
 
   it("supports documented admin activation-code aliases", async () => {
@@ -279,6 +354,29 @@ describe("api routes", () => {
       });
       expect(allowed.status).toBe(200);
       expect((await allowed.json()).data.parse_per_minute).toBe(5);
+
+      const logoutWithoutCsrf = await app.request("/api/admin/logout", {
+        method: "POST",
+        headers: { cookie },
+      });
+      expect(logoutWithoutCsrf.status).toBe(403);
+
+      const logout = await app.request("/api/admin/logout", {
+        method: "POST",
+        headers: { cookie, "x-csrf-token": csrf },
+      });
+      expect(logout.status).toBe(200);
+      expect(logout.headers.get("set-cookie")).toContain("admin_token=; ");
+      expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+
+      const afterLogout = await app.request("/admin", { headers: { cookie } });
+      const afterLogoutHtml = await afterLogout.text();
+      expect(afterLogout.status).toBe(200);
+      expect(afterLogoutHtml).toContain('id="loginForm"');
+      expect(afterLogoutHtml).not.toContain('class="tab-nav"');
+
+      const revokedApi = await app.request("/api/admin/rate-limits", { headers: { cookie } });
+      expect(revokedApi.status).toBe(403);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;
@@ -345,6 +443,24 @@ describe("api routes", () => {
       const loadedAfterEnableBody = await loadedAfterEnable.json();
       expect(loadedAfterEnableBody.data.otpauth_uri).toContain("otpauth://totp/");
       expect(loadedAfterEnableBody.data.qr_svg).toContain("<svg");
+
+      const exposedWithoutSecondFactor = await app.request("/api/admin/totp/bootstrap", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "totp-password" }),
+      });
+      const exposedWithoutSecondFactorText = await exposedWithoutSecondFactor.text();
+      expect(exposedWithoutSecondFactor.status).toBe(403);
+      expect(exposedWithoutSecondFactorText).not.toContain(setupBody.data.secret);
+      expect(exposedWithoutSecondFactorText).not.toContain("otpauth://totp/");
+
+      const existingQrWithSecondFactor = await app.request("/api/admin/totp/bootstrap", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "totp-password", totp: currentTotpCode(setupBody.data.secret) }),
+      });
+      expect(existingQrWithSecondFactor.status).toBe(200);
+      expect((await existingQrWithSecondFactor.json()).data.qr_svg).toContain("<svg");
 
       const loginWithoutTotp = await app.request("/api/admin/login", {
         method: "POST",

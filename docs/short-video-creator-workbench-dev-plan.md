@@ -67,6 +67,8 @@
 - 限流拦截审计已补齐：解析、媒体代理、批量、AI 和评论接口触发限流时会写入 `rate_limited_*` 调用日志，并写入 `rate_limit_block` 安全审计，后台可直接查看。
 - 方案 A 已确认继续推进；后台小米/OpenAI-compatible 大模型配置补齐高级参数：请求超时、最大 token、temperature，便于控制速度、成本和文案发散度。
 - Cookie 会话 CSRF 防护已落地：会员登录/注册和后台登录都会下发 `csrf_token` 与同名 CSRF Cookie，使用 Cookie 鉴权的写操作必须携带 `X-CSRF-Token`，降低跨站盗用后台和会员批量能力的风险。
+- 后台入口隔离已落地：未认证访问 `/admin` 只返回独立登录页，不下发后台导航、指标、任务和配置工作区 HTML；登录后由服务端 Cookie session 决定是否渲染后台。`POST /api/admin/logout` 会销毁服务端会话并清除 Cookie，失效 Cookie 会在访问入口时主动清理。
+- 后台认证收紧已落地：登录/首次 TOTP 绑定接口只接受不超过 8 KiB 的 JSON；后台页面和接口使用 `no-store` 与防嵌入响应头；TOTP 已启用后，账号密码本身不能读取现有二维码或密钥，必须追加当前 6 位动态码。
 - 后台接口调用汇总已落地：`GET /api/admin/usage/summary` 按接口类型、状态码、用户、IP 汇总最近调用，后台首页直接显示成功、错误、限流拦截和高频来源。
 - 批量后处理队列已落地：批量 AI 口播文案和评论读取支持 `async: true` 加入队列，进度写入批量任务 `post_jobs`，离开页面后回来仍能看到完成进度；并发由 `POST_JOB_MAX_ACTIVE` 控制；后台任务列表会展开每个后处理任务并支持取消 queued/running 状态。
 - 在线人数压力自适应资源已落地：批量解析创建时会根据当前真实在线人数降低 `max_active_tasks` 和全局并发，默认 5 人在线开始进入更保守队列模式；`GET /api/v1/batch/queue/status` 返回 `adaptive` 资源状态。
@@ -587,6 +589,7 @@ POST /api/v1/auth/logout
 
 ```text
 POST /api/admin/login
+POST /api/admin/logout
 POST /api/admin/totp/setup
 POST /api/admin/totp/verify
 GET  /api/admin/totp
