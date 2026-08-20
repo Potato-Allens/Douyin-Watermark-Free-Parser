@@ -38,7 +38,7 @@ ADMIN_LOGIN_WINDOW_MINUTES=15
 ADMIN_LOGIN_LOCK_MINUTES=15
 ```
 
-`ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty, only username/password is checked.
+`ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty, the `/admin` page can generate a scan QR before login after the admin username/password is verified; scan it, enter the 6-digit code, and the page will enable TOTP and sign in.
 
 ## 3. Node/systemd Deployment
 

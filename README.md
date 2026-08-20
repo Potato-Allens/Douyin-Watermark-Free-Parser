@@ -203,7 +203,7 @@ GET  /api/admin/activation-codes
 POST /api/admin/activation-codes
 ```
 
-Admin login supports username/password plus Google Authenticator/TOTP. `/api/admin/totp/setup` returns a Base32 secret and `otpauth_uri`; `/api/admin/totp/verify` enables or disables the stored TOTP after code verification. Failed login attempts are locked by IP + username. `/api/admin/dashboard` aggregates online count, adaptive queue capacity, usage summary, rate limits, security policy summary, and recent jobs for the admin overview. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
+Admin login supports username/password plus Google Authenticator/TOTP. If the admin cannot log in because no authenticator has been scanned yet, `/api/admin/totp/bootstrap` can generate the QR after username/password verification, and `/api/admin/totp/bootstrap/verify` verifies the 6-digit code, enables TOTP, and returns an admin session. Logged-in admins can still use `/api/admin/totp/setup` and `/api/admin/totp/verify` to rotate, enable, or disable stored TOTP. Failed login attempts are locked by IP + username. `/api/admin/dashboard` aggregates online count, adaptive queue capacity, usage summary, rate limits, security policy summary, and recent jobs for the admin overview. The job console shows persisted batch `post_jobs` for async AI/comment work and can cancel queued/running post-processing jobs.
 
 ## Environment Variables
 

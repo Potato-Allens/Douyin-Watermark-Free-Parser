@@ -154,7 +154,7 @@ async function fetchProfilePostPage(
 }
 
 function normalizeProfileInput(input: string): string {
-  const match = input.trim().match(/https?:\/\/[^\s"'<>??????]+/i);
+  const match = input.trim().match(/https?:\/\/[^\s"'<>，。！？；、]+/i);
   const raw = match?.[0] ?? input.trim();
   let url: URL;
   try {

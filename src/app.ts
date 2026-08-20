@@ -14,6 +14,7 @@ import {
   getVipStore,
   inspectBatchHomepage,
   listBatchTasks,
+  makeLocalAiCopy,
   makeErrorResponse,
   parseDouyinUrl,
   proxyMediaUrl,
@@ -374,6 +375,13 @@ export function createApp(options: CreateAppOptions = {}) {
   };
 
   const getStore = () => vipStorePromise ?? getVipStore();
+  const getOptionalVipSession = async (c: Context, options: { mutation?: boolean } = {}): Promise<VipSession | MemberSession | null> => {
+    const auth = readVipAuth(c.req.raw);
+    if (!auth.token) return null;
+    const session = await (await getStore()).verify(auth.token);
+    if (session && options.mutation && auth.source === "cookie") enforceCsrf(c, "vip_csrf");
+    return session;
+  };
 
   app.get("/", async (c) => {
     const requestUrl = new URL(c.req.url);
@@ -610,18 +618,20 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.post("/api/v1/profile/inspect", async (c) => {
-    let sessionKey = "unknown";
+    let sessionKey = "guest";
     try {
       await guardPublicAccess(c, "profile_inspect");
-      const session = await requireVip(c, await getStore(), { mutation: true });
-      sessionKey = session.code;
+      const session = await getOptionalVipSession(c, { mutation: true });
+      sessionKey = session?.code ?? "guest";
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
-      const maxItems = Math.min(parsePositiveInt(body.count ?? body.max_items, getBatchParseLimit(session)), getBatchParseLimit(session));
-      await enforceMemberRateLimit("profile_inspect", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      const planLimit = session ? getBatchParseLimit(session) : 30;
+      const maxItems = Math.min(parsePositiveInt(body.count ?? body.max_items, Math.min(12, planLimit)), planLimit);
+      if (session) await enforceMemberRateLimit("profile_inspect", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      else await enforcePublicRateLimit("profile_inspect_guest", c, Math.max(10, Math.min(30, (await getEffectiveRateLimits()).batch_per_hour)), 60 * 60 * 1000);
       const data = await inspectBatchHomepage(homepageUrl, { ...parserOptions, maxItems });
-      await recordUsage({ kind: "profile_inspect", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/inspect", status: 200, detail: JSON.stringify({ requested_count: maxItems, available_count: data.available_count, total_count: data.total_count }) });
+      await recordUsage({ kind: "profile_inspect", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/inspect", status: 200, detail: JSON.stringify({ requested_count: maxItems, available_count: data.available_count, total_count: data.total_count, guest: !session }) });
       return c.json(success(data));
     } catch (error) {
       await recordUsage({ kind: "profile_inspect", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/inspect", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
@@ -630,21 +640,22 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/api/v1/profile/:id/videos", async (c) => {
-    let sessionKey = "unknown";
+    let sessionKey = "guest";
     const profileId = c.req.param("id");
     try {
       await guardPublicAccess(c, "profile_videos");
-      const session = await requireVip(c, await getStore());
-      sessionKey = session.code;
+      const session = await getOptionalVipSession(c);
+      sessionKey = session?.code ?? "guest";
       const requestUrl = new URL(c.req.url);
       const homepageUrl = requestUrl.searchParams.get("url") || `https://www.douyin.com/user/${encodeURIComponent(profileId)}`;
-      const planLimit = getBatchParseLimit(session);
+      const planLimit = session ? getBatchParseLimit(session) : 30;
       const previewOffset = parseNonNegativeInt(requestUrl.searchParams.get("offset"), 0);
-      if (previewOffset >= planLimit) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${planLimit} works per profile preview`, 403);
+      if (previewOffset >= planLimit) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `当前账号最多预览 ${planLimit} 条主页作品`, 403);
       const previewLimit = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 12), planLimit - previewOffset, 100);
-      await enforceMemberRateLimit("profile_videos", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      if (session) await enforceMemberRateLimit("profile_videos", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      else await enforcePublicRateLimit("profile_videos_guest", c, Math.max(10, Math.min(30, (await getEffectiveRateLimits()).batch_per_hour)), 60 * 60 * 1000);
       const data = await buildProfilePreview(homepageUrl, previewLimit, getPublicRequestUrl(c), previewOffset);
-      await recordUsage({ kind: "profile_videos", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/:id/videos", status: 200, detail: JSON.stringify({ profile_id: profileId, preview_count: data.preview_count, total_count: data.total_count }) });
+      await recordUsage({ kind: "profile_videos", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/:id/videos", status: 200, detail: JSON.stringify({ profile_id: profileId, preview_count: data.preview_count, total_count: data.total_count, guest: !session }) });
       return c.json(success({ profile_id: profileId, ...data }));
     } catch (error) {
       await recordUsage({ kind: "profile_videos", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/:id/videos", status: error instanceof DouyinServiceError ? error.status : 500, detail: JSON.stringify({ profile_id: profileId, error: error instanceof Error ? error.message : String(error) }) });
@@ -653,21 +664,22 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.post("/api/v1/profile/preview", async (c) => {
-    let sessionKey = "unknown";
+    let sessionKey = "guest";
     try {
       await guardPublicAccess(c, "profile_preview");
-      const session = await requireVip(c, await getStore(), { mutation: true });
-      sessionKey = session.code;
+      const session = await getOptionalVipSession(c, { mutation: true });
+      sessionKey = session?.code ?? "guest";
       const body = await readJsonBody(c);
       const homepageUrl = asString(body.url) ?? asString(body.homepage_url);
       if (!homepageUrl) throw new DouyinServiceError("MISSING_URL");
-      const planLimit = getBatchParseLimit(session);
+      const planLimit = session ? getBatchParseLimit(session) : 30;
       const previewOffset = parseNonNegativeInt(body.offset, 0);
-      if (previewOffset >= planLimit) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `current plan allows up to ${planLimit} works per profile preview`, 403);
+      if (previewOffset >= planLimit) throw new DouyinServiceError("UNSUPPORTED_CONTENT", `当前账号最多预览 ${planLimit} 条主页作品`, 403);
       const previewLimit = Math.min(parsePositiveInt(body.count, 8), planLimit - previewOffset, 50);
-      await enforceMemberRateLimit("profile_preview", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      if (session) await enforceMemberRateLimit("profile_preview", c, session, Math.max(20, (await getEffectiveRateLimits()).batch_per_hour), 60 * 60 * 1000);
+      else await enforcePublicRateLimit("profile_preview_guest", c, Math.max(10, Math.min(30, (await getEffectiveRateLimits()).batch_per_hour)), 60 * 60 * 1000);
       const data = await buildProfilePreview(homepageUrl, previewLimit, getPublicRequestUrl(c), previewOffset);
-      await recordUsage({ kind: "profile_preview", user_key: session.code, ip: getClientIp(c), path: "/api/v1/profile/preview", status: 200, detail: JSON.stringify({ offset: data.offset, preview_count: data.preview_count, total_count: data.total_count }) });
+      await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview", status: 200, detail: JSON.stringify({ offset: data.offset, preview_count: data.preview_count, total_count: data.total_count, guest: !session }) });
       return c.json(success(data));
     } catch (error) {
       await recordUsage({ kind: "profile_preview", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/profile/preview", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
@@ -1048,18 +1060,24 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/api/v1/ai/transcript", async (c) => {
     const store = await creatorStorePromise;
+    let sessionKey = "guest";
     try {
       await guardPublicAccess(c, "ai_transcript");
-      const session = await requireVip(c, await getStore(), { mutation: true });
-      const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
-      if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
-      await enforceMemberRateLimit("ai_transcript", c, session, aiQuota, 24 * 60 * 60 * 1000);
+      const session = await getOptionalVipSession(c, { mutation: true });
+      sessionKey = session?.code ?? "guest";
+      if (session) {
+        const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
+        if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含 AI 文案能力", 403);
+        await enforceMemberRateLimit("ai_transcript", c, session, aiQuota, 24 * 60 * 60 * 1000);
+      } else {
+        await enforcePublicRateLimit("ai_transcript_guest", c, Math.max(10, Math.min(30, (await getEffectiveRateLimits()).ai_per_day)), 24 * 60 * 60 * 1000);
+      }
       const body = await readJsonBody(c);
       const inputUrl = asString(body.url);
       if (!inputUrl) throw new DouyinServiceError("MISSING_URL");
       const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
       const transcript = createTranscriptDraft(parsed);
-      await store.recordUsage({ kind: "ai_transcript", user_key: session.code, ip: getClientIp(c), path: "/api/v1/ai/transcript", status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id }) });
+      await store.recordUsage({ kind: "ai_transcript", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/ai/transcript", status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, provider: "metadata_draft", guest: !session }) });
       return c.json(
         success({
           provider: "metadata_draft",
@@ -1073,7 +1091,7 @@ export function createApp(options: CreateAppOptions = {}) {
         }),
       );
     } catch (error) {
-      await store.recordUsage({ kind: "ai_transcript", user_key: "unknown", ip: getClientIp(c), path: "/api/v1/ai/transcript", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      await store.recordUsage({ kind: "ai_transcript", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/ai/transcript", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
@@ -1083,19 +1101,23 @@ export function createApp(options: CreateAppOptions = {}) {
     let sessionKey = "unknown";
     try {
       await guardPublicAccess(c, responseKind === "tags" ? "ai_tags" : "ai_script");
-      const session = await requireVip(c, await getStore(), { mutation: true });
-      sessionKey = session.code;
-      const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
-      if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include AI copywriting", 403);
-      await enforceMemberRateLimit("ai", c, session, aiQuota, 24 * 60 * 60 * 1000);
+      const session = await getOptionalVipSession(c, { mutation: true });
+      sessionKey = session?.code ?? "guest";
+      if (session) {
+        const aiQuota = Math.min(getAiDailyQuota(session), (await getEffectiveRateLimits()).ai_per_day);
+        if (aiQuota <= 0) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含 AI 文案能力", 403);
+        await enforceMemberRateLimit("ai", c, session, aiQuota, 24 * 60 * 60 * 1000);
+      } else {
+        await enforcePublicRateLimit(responseKind === "tags" ? "ai_tags_guest" : "ai_script_guest", c, Math.max(10, Math.min(30, (await getEffectiveRateLimits()).ai_per_day)), 24 * 60 * 60 * 1000);
+      }
       const body = await readJsonBody(c);
       const inputUrl = asString(body.url);
       if (!inputUrl) throw new DouyinServiceError("MISSING_URL");
       const prompt = asString(body.prompt);
       const mode = asString(body.mode) ?? defaultMode;
       const parsed = decorateParsedInfo(await parseForRequest(inputUrl), getPublicRequestUrl(c));
-      const data = await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher });
-      await store.recordUsage({ kind: `ai_${mode}`, user_key: session.code, ip: getClientIp(c), path, status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, response: responseKind }) });
+      const data = session ? await generateAiCopy({ parsed, prompt, mode, store, fetcher: parserOptions.fetcher }) : makeLocalAiCopy(parsed, prompt, mode);
+      await store.recordUsage({ kind: `ai_${mode}`, user_key: sessionKey, ip: getClientIp(c), path, status: 200, detail: JSON.stringify({ aweme_id: parsed.source.aweme_id, response: responseKind, provider: data.provider, guest: !session }) });
       return c.json(
         success(
           responseKind === "tags"
@@ -1123,22 +1145,28 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/comments", async (c) => {
     const store = await creatorStorePromise;
+    let sessionKey = "guest";
     try {
       await guardPublicAccess(c, "comments_fetch");
-      const session = await requireVip(c, await getStore());
-      if (isMemberSession(session) && !session.plan.comment_export) {
-        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
-      }
+      const session = await getOptionalVipSession(c);
+      sessionKey = session?.code ?? "guest";
       const requestUrl = new URL(c.req.url);
       const awemeId = requestUrl.searchParams.get("aweme_id");
       const inputUrl = requestUrl.searchParams.get("url");
       const taskId = requestUrl.searchParams.get("task_id");
       if (taskId) {
+        if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "请先登录会员后查看批量任务评论", 403);
+        if (isMemberSession(session) && !session.plan.comment_export) {
+          throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含评论查看/导出", 403);
+        }
         const task = await getBatchTask(taskId);
         if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
         assertBatchTaskAccess(task, session);
         const items = awemeId ? task.items.filter((item) => item.aweme_id === awemeId) : task.items;
         return c.json(success({ task_id: task.id, aweme_id: awemeId ?? null, items: items.map((item) => ({ aweme_id: item.aweme_id, title: item.title, comments: item.comments })) }));
+      }
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含评论查看/导出", 403);
       }
       let targetAwemeId = awemeId;
       if (!targetAwemeId && inputUrl) {
@@ -1146,28 +1174,26 @@ export function createApp(options: CreateAppOptions = {}) {
         targetAwemeId = parsed.source.aweme_id;
       }
       if (!targetAwemeId) throw new DouyinServiceError("MISSING_URL", "aweme_id or url query parameter is required");
-      const count = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 20), 100);
+      const count = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 20), session ? 100 : 20);
       const cursor = parsePositiveInt(requestUrl.searchParams.get("cursor"), 0);
-      await enforceMemberRateLimit("comments", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000);
+      if (session) await enforceMemberRateLimit("comments", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000);
+      else await enforcePublicRateLimit("comments_guest", c, Math.max(10, Math.min(50, (await getEffectiveRateLimits()).comments_per_day)), 24 * 60 * 60 * 1000);
       const data = await fetchDouyinComments(targetAwemeId, { ...parserOptions, count, cursor });
-      await store.recordUsage({ kind: "comments_fetch", user_key: session.code, ip: getClientIp(c), path: "/api/v1/comments", status: 200, detail: JSON.stringify({ aweme_id: targetAwemeId, count: data.comments.length }) });
+      await store.recordUsage({ kind: "comments_fetch", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/comments", status: 200, detail: JSON.stringify({ aweme_id: targetAwemeId, count: data.comments.length, guest: !session }) });
       return c.json(success({ ...data, input_url: inputUrl ?? null }));
     } catch (error) {
-      await store.recordUsage({ kind: "comments_fetch", user_key: "unknown", ip: getClientIp(c), path: "/api/v1/comments", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
+      await store.recordUsage({ kind: "comments_fetch", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/comments", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
       return jsonError(c, error);
     }
   });
 
   app.get("/api/v1/comments/export", async (c) => {
     const store = await creatorStorePromise;
-    let sessionKey = "unknown";
+    let sessionKey = "guest";
     try {
       await guardPublicAccess(c, "comments_export");
-      const session = await requireVip(c, await getStore());
-      sessionKey = session.code;
-      if (isMemberSession(session) && !session.plan.comment_export) {
-        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "current plan does not include comment export", 403);
-      }
+      const session = await getOptionalVipSession(c);
+      sessionKey = session?.code ?? "guest";
       const requestUrl = new URL(c.req.url);
       const type = requestUrl.searchParams.get("type") === "csv" ? "csv" : "json";
       const awemeId = requestUrl.searchParams.get("aweme_id");
@@ -1175,6 +1201,10 @@ export function createApp(options: CreateAppOptions = {}) {
       const taskId = requestUrl.searchParams.get("task_id");
 
       if (taskId) {
+        if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "请先登录会员后导出批量任务评论", 403);
+        if (isMemberSession(session) && !session.plan.comment_export) {
+          throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含评论查看/导出", 403);
+        }
         const task = await getBatchTask(taskId);
         if (!task) throw new DouyinServiceError("PARSE_FAILED", "batch task not found", 404);
         assertBatchTaskAccess(task, session);
@@ -1193,17 +1223,21 @@ export function createApp(options: CreateAppOptions = {}) {
         );
       }
 
+      if (isMemberSession(session) && !session.plan.comment_export) {
+        throw new DouyinServiceError("UNSUPPORTED_CONTENT", "当前套餐不包含评论查看/导出", 403);
+      }
       let targetAwemeId = awemeId;
       if (!targetAwemeId && inputUrl) {
         const parsed = await parseForRequest(inputUrl);
         targetAwemeId = parsed.source.aweme_id;
       }
       if (!targetAwemeId) throw new DouyinServiceError("MISSING_URL", "aweme_id, url or task_id query parameter is required");
-      const count = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 100), 100);
+      const count = Math.min(parsePositiveInt(requestUrl.searchParams.get("count") ?? requestUrl.searchParams.get("limit"), 100), session ? 100 : 50);
       const cursor = parsePositiveInt(requestUrl.searchParams.get("cursor"), 0);
-      await enforceMemberRateLimit("comments_export", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000);
+      if (session) await enforceMemberRateLimit("comments_export", c, session, (await getEffectiveRateLimits()).comments_per_day, 24 * 60 * 60 * 1000);
+      else await enforcePublicRateLimit("comments_export_guest", c, Math.max(10, Math.min(50, (await getEffectiveRateLimits()).comments_per_day)), 24 * 60 * 60 * 1000);
       const data = await fetchDouyinComments(targetAwemeId, { ...parserOptions, count, cursor });
-      await store.recordUsage({ kind: "comments_export", user_key: session.code, ip: getClientIp(c), path: "/api/v1/comments/export", status: 200, detail: JSON.stringify({ aweme_id: targetAwemeId, count: data.comments.length, type }) });
+      await store.recordUsage({ kind: "comments_export", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/comments/export", status: 200, detail: JSON.stringify({ aweme_id: targetAwemeId, count: data.comments.length, type, guest: !session }) });
       return commentsExportResponse({ ...data, input_url: inputUrl ?? null }, type, `comments-${targetAwemeId}`);
     } catch (error) {
       await store.recordUsage({ kind: "comments_export", user_key: sessionKey, ip: getClientIp(c), path: "/api/v1/comments/export", status: error instanceof DouyinServiceError ? error.status : 500, detail: error instanceof Error ? error.message : String(error) });
@@ -1270,6 +1304,130 @@ export function createApp(options: CreateAppOptions = {}) {
           failure_count: failure?.failure_count ?? null,
           locked_until: failure?.locked_until ?? null,
         }),
+      });
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/totp/bootstrap", async (c) => {
+    const store = await creatorStorePromise;
+    const ip = getClientIp(c);
+    let username: string | null = null;
+    let loginKey = adminLoginKey(ip, null);
+    try {
+      const body = await readJsonBody(c);
+      username = asString(body.username);
+      const password = asString(body.password);
+      loginKey = adminLoginKey(ip, username);
+      assertAdminLoginAllowed(loginKey);
+      assertAdminPassword(username, password);
+      clearAdminLoginFailure(loginKey);
+
+      const requestedIssuer = asString(body.issuer) ?? "抖映灵感台";
+      const requestedAccount = asString(body.account) ?? username ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
+      const current = await getEffectiveAdminTotp();
+      const secret = normalizeTotpSecret(current.secret) ?? generateTotpSecret();
+      const issuer = current.enabled && current.issuer ? current.issuer : requestedIssuer;
+      const account = current.enabled && current.account ? current.account : requestedAccount;
+      const otpauth_uri = buildOtpAuthUri({ issuer, account, secret });
+      const qr_svg = await buildQrSvg(otpauth_uri);
+      await store.recordAudit({
+        actor: username ?? "admin",
+        action: current.enabled ? "admin_totp_bootstrap_existing_qr" : "admin_totp_bootstrap_setup_qr",
+        ip,
+        detail: JSON.stringify({ issuer, account, source: current.source, enabled: current.enabled }),
+      });
+      return c.json(
+        success({
+          enabled: current.enabled,
+          source: current.source,
+          configurable: current.configurable,
+          secret,
+          secret_masked: maskTotpSecret(secret),
+          issuer,
+          account,
+          otpauth_uri,
+          qr_svg,
+          next: current.enabled ? "scan_and_login" : "scan_and_verify",
+        }),
+      );
+    } catch (error) {
+      const serviceError = toServiceError(error);
+      const loginFailed = serviceError.status === 403 && /credentials/.test(serviceError.detail);
+      const locked = serviceError.status === 429 && serviceError.detail.includes("temporarily locked");
+      const failure = loginFailed ? recordAdminLoginFailure(loginKey) : null;
+      await store.recordAudit({
+        actor: username ?? "admin",
+        action: locked ? "admin_totp_bootstrap_locked" : "admin_totp_bootstrap_failed",
+        ip,
+        detail: JSON.stringify({ detail: serviceError.detail, status: serviceError.status, failure_count: failure?.failure_count ?? null, locked_until: failure?.locked_until ?? null }),
+      });
+      return jsonError(c, error);
+    }
+  });
+
+  app.post("/api/admin/totp/bootstrap/verify", async (c) => {
+    const store = await creatorStorePromise;
+    const ip = getClientIp(c);
+    let username: string | null = null;
+    let loginKey = adminLoginKey(ip, null);
+    try {
+      const body = await readJsonBody(c);
+      username = asString(body.username);
+      const password = asString(body.password);
+      loginKey = adminLoginKey(ip, username);
+      assertAdminLoginAllowed(loginKey);
+      assertAdminPassword(username, password);
+
+      const current = await getEffectiveAdminTotp();
+      const secret = normalizeTotpSecret(current.secret) ?? normalizeTotpSecret(body.secret);
+      const code = asString(body.code);
+      if (!secret) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp secret is required", 400);
+      if (!(await verifyTotpCode(secret, code))) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "totp code is invalid", 403);
+
+      const issuer = asString(body.issuer) ?? current.issuer ?? "抖映灵感台";
+      const account = asString(body.account) ?? current.account ?? username ?? (getRuntimeEnv().ADMIN_USERNAME ?? "admin");
+      const envTotp = normalizeTotpSecret(getRuntimeEnv().ADMIN_TOTP_SECRET);
+      let saved: Awaited<ReturnType<CreatorStore["saveAdminTotpSettings"]>> | null = null;
+      if (!envTotp) {
+        saved = await store.saveAdminTotpSettings({ enabled: true, secret, issuer, account });
+      }
+
+      clearAdminLoginFailure(loginKey);
+      const token = randomId();
+      const expiresAt = Date.now() + 8 * 60 * 60 * 1000;
+      adminSessions.set(token, expiresAt);
+      const csrfToken = randomId();
+      appendSetCookies(c, [buildAdminCookie(token, 8 * 60 * 60, getPublicRequestUrl(c)), buildCsrfCookie("admin_csrf", csrfToken, 8 * 60 * 60, getPublicRequestUrl(c))]);
+      const resolvedIssuer = saved?.issuer ?? issuer;
+      const resolvedAccount = saved?.account ?? account;
+      const otpauth_uri = buildOtpAuthUri({ issuer: resolvedIssuer, account: resolvedAccount, secret });
+      const qr_svg = await buildQrSvg(otpauth_uri);
+      await store.recordAudit({ actor: username ?? "admin", action: "admin_totp_bootstrap_verify", ip, detail: JSON.stringify({ issuer: resolvedIssuer, account: resolvedAccount, source: envTotp ? "env" : "store" }) });
+      return c.json(
+        success({
+          token,
+          csrf_token: csrfToken,
+          expires_at: new Date(expiresAt).toISOString(),
+          totp_enabled: true,
+          totp_source: envTotp ? "env" : "store",
+          secret_masked: maskTotpSecret(secret),
+          issuer: resolvedIssuer,
+          account: resolvedAccount,
+          otpauth_uri,
+          qr_svg,
+        }),
+      );
+    } catch (error) {
+      const serviceError = toServiceError(error);
+      const loginFailed = serviceError.status === 403 && /credentials|totp/.test(serviceError.detail);
+      const locked = serviceError.status === 429 && serviceError.detail.includes("temporarily locked");
+      const failure = loginFailed ? recordAdminLoginFailure(loginKey) : null;
+      await store.recordAudit({
+        actor: username ?? "admin",
+        action: locked ? "admin_totp_bootstrap_verify_locked" : "admin_totp_bootstrap_verify_failed",
+        ip,
+        detail: JSON.stringify({ detail: serviceError.detail, status: serviceError.status, failure_count: failure?.failure_count ?? null, locked_until: failure?.locked_until ?? null }),
       });
       return jsonError(c, error);
     }
@@ -2424,7 +2582,7 @@ async function readJsonBody(c: Context): Promise<Record<string, unknown>> {
 async function requireVip(c: Context, store: VipStore, options: { mutation?: boolean } = {}): Promise<VipSession | MemberSession> {
   const auth = readVipAuth(c.req.raw);
   const session = await store.verify(auth.token);
-  if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "membership activation is required for batch parsing", 403);
+  if (!session) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "请先激活或登录会员后再使用该功能", 403);
   if (options.mutation && auth.source === "cookie") enforceCsrf(c, "vip_csrf");
   return session;
 }
@@ -2512,6 +2670,16 @@ function readVipAuth(request: Request): { token: string | null; source: TokenSou
 
 function readVipToken(request: Request): string | null {
   return readVipAuth(request).token;
+}
+
+function assertAdminPassword(username: string | null | undefined, password: string | null | undefined): void {
+  const env = getRuntimeEnv();
+  const expectedUser = env.ADMIN_USERNAME ?? "admin";
+  const expectedPassword = env.ADMIN_PASSWORD;
+  if (!expectedPassword) throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin password is not configured", 503);
+  if (username !== expectedUser || password !== expectedPassword) {
+    throw new DouyinServiceError("UNSUPPORTED_CONTENT", "admin credentials are invalid", 403);
+  }
 }
 
 function requireAdmin(c: Context, sessions: Map<string, number>, options: { mutation?: boolean } = {}): void {
@@ -2826,13 +2994,13 @@ function enforceRateLimit(buckets: Map<string, { resetAt: number; count: number 
   if (!bucket || bucket.resetAt <= now) {
     buckets.set(key, { resetAt: now + windowMs, count: cost });
     if (cost > limit) {
-      throw new DouyinServiceError("UNSUPPORTED_CONTENT", "rate limit exceeded, please wait and retry", 429);
+      throw new DouyinServiceError("UNSUPPORTED_CONTENT", "请求过于频繁，请稍后再试", 429);
     }
     return;
   }
   bucket.count += cost;
   if (bucket.count > limit) {
-    throw new DouyinServiceError("UNSUPPORTED_CONTENT", "rate limit exceeded, please wait and retry", 429);
+    throw new DouyinServiceError("UNSUPPORTED_CONTENT", "请求过于频繁，请稍后再试", 429);
   }
 }
 

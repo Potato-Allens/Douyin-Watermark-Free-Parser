@@ -72,6 +72,10 @@ describe("api routes", () => {
     expect(html).toContain('downloadExport("comments_csv")');
     expect(html).toContain("/api/v1/batch/tasks?limit=12");
     expect(html).toContain('profilePreviewBtn:$("inspectBtn")');
+    expect(html).toContain('class="side-stack"');
+    expect(html).toContain("任务队列");
+    expect(html).not.toContain("底部任务队列");
+    expect(html).not.toContain("membership activation is required");
     expect(html).not.toContain('profilePreviewBtn:$("profilePreviewBtn")');
 
     const icon = await app.request("/favicon.ico");
@@ -119,6 +123,7 @@ describe("api routes", () => {
     expect(html).toContain("&#25238;&#26144;&#28789;&#24863;&#21488;&#21518;&#21488;");
     expect(html).toContain("/api/admin/rate-limits");
     expect(html).toContain("/api/admin/totp/setup");
+    expect(html).toContain("/api/admin/totp/bootstrap");
     expect(html).toContain('id="totpSecret"');
     expect(html).toContain('id="totpQr"');
     expect(html).toContain("&#29983;&#25104;&#20108;&#32500;&#30721;");
@@ -360,6 +365,56 @@ describe("api routes", () => {
       const auditBody = await audit.json();
       expect(auditBody.data.some((entry: any) => entry.action === "admin_totp_enable")).toBe(true);
       expect(auditBody.data.some((entry: any) => entry.action === "admin_totp_disable")).toBe(true);
+    } finally {
+      if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = oldToken;
+      if (oldUser === undefined) delete process.env.ADMIN_USERNAME;
+      else process.env.ADMIN_USERNAME = oldUser;
+      if (oldPassword === undefined) delete process.env.ADMIN_PASSWORD;
+      else process.env.ADMIN_PASSWORD = oldPassword;
+      if (oldTotp === undefined) delete process.env.ADMIN_TOTP_SECRET;
+      else process.env.ADMIN_TOTP_SECRET = oldTotp;
+    }
+  });
+
+  it("bootstraps an admin TOTP QR before login with admin password", async () => {
+    const oldToken = process.env.ADMIN_TOKEN;
+    const oldUser = process.env.ADMIN_USERNAME;
+    const oldPassword = process.env.ADMIN_PASSWORD;
+    const oldTotp = process.env.ADMIN_TOTP_SECRET;
+    delete process.env.ADMIN_TOKEN;
+    process.env.ADMIN_USERNAME = "admin";
+    process.env.ADMIN_PASSWORD = "bootstrap-password";
+    delete process.env.ADMIN_TOTP_SECRET;
+    try {
+      const creatorStore = createMemoryCreatorStore();
+      const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore });
+
+      const setup = await app.request("/api/admin/totp/bootstrap", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "bootstrap-password", issuer: "抖映灵感台", account: "admin" }),
+      });
+      const setupBody = await setup.json();
+      expect(setup.status).toBe(200);
+      expect(setupBody.data.enabled).toBe(false);
+      expect(setupBody.data.secret.length).toBeGreaterThanOrEqual(16);
+      expect(setupBody.data.otpauth_uri).toContain("otpauth://totp/");
+      expect(setupBody.data.qr_svg).toContain("<svg");
+
+      const verify = await app.request("/api/admin/totp/bootstrap/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "bootstrap-password", secret: setupBody.data.secret, code: currentTotpCode(setupBody.data.secret), issuer: "抖映灵感台", account: "admin" }),
+      });
+      const verifyBody = await verify.json();
+      expect(verify.status).toBe(200);
+      expect(verifyBody.data.totp_enabled).toBe(true);
+      expect(verifyBody.data.token).toBeTruthy();
+      expect(verify.headers.get("set-cookie")).toContain("admin_csrf=");
+
+      const dashboard = await app.request("/api/admin/dashboard", { headers: { authorization: `Bearer ${verifyBody.data.token}` } });
+      expect(dashboard.status).toBe(200);
     } finally {
       if (oldToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = oldToken;
@@ -657,6 +712,40 @@ describe("api routes", () => {
     expect(transcriptBody.data.provider).toBe("metadata_draft");
     expect(transcriptBody.data.transcript).toBeTruthy();
     expect(transcriptBody.data.next.rewrite_endpoint).toBe("/api/v1/ai/script");
+  });
+
+  it("allows single-video AI copywriting locally without member activation", async () => {
+    const app = createApp({ fetcher: makeFixtureFetcher(VIDEO_HTML), creatorStore: createMemoryCreatorStore() });
+
+    const transcript = await app.request("/api/v1/ai/transcript", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/" }),
+    });
+    const transcriptBody = await transcript.json();
+    expect(transcript.status).toBe(200);
+    expect(transcriptBody.data.provider).toBe("metadata_draft");
+    expect(transcriptBody.data.transcript).toBeTruthy();
+
+    const script = await app.request("/api/v1/ai/script", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/", prompt: "更口语化", mode: "script" }),
+    });
+    const scriptBody = await script.json();
+    expect(script.status).toBe(200);
+    expect(scriptBody.data.provider).toBe("local_template");
+    expect(scriptBody.data.rewritten_script).toContain("更口语化");
+
+    const tags = await app.request("/api/v1/ai/tags", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://v.douyin.com/abc123/" }),
+    });
+    const tagsBody = await tags.json();
+    expect(tags.status).toBe(200);
+    expect(tagsBody.data.provider).toBe("local_template");
+    expect(tagsBody.data.tags.length).toBeGreaterThan(0);
   });
 
   it("lets admin manage member plans and activation codes with admin token", async () => {
@@ -1018,6 +1107,16 @@ describe("api routes", () => {
     });
     const token = (await register.json()).data.token;
     const headers = { authorization: `Bearer ${token}` };
+
+    const guestComments = await app.request("/api/v1/comments?aweme_id=7673000000000000001&count=10");
+    const guestCommentsBody = await guestComments.json();
+    expect(guestComments.status).toBe(200);
+    expect(guestCommentsBody.data.comments[0].text).toBe("这个视频很有用");
+
+    const guestExport = await app.request("/api/v1/comments/export?aweme_id=7673000000000000001&type=json&count=10");
+    const guestExportBody = await guestExport.json();
+    expect(guestExport.status).toBe(200);
+    expect(guestExportBody.comments[0].text).toBe("这个视频很有用");
 
     const comments = await app.request("/api/v1/comments?aweme_id=7673000000000000001&count=10", { headers });
     const commentsBody = await comments.json();
@@ -1435,6 +1534,21 @@ describe("api routes", () => {
       return new Response(VIDEO_HTML, { headers: { "content-type": "text/html" } });
     };
     const app = createApp({ fetcher, vipStore: store, cacheTtlMs: 0 });
+    const guestPreview = await app.request("/api/v1/profile/preview", {
+      method: "POST",
+      body: JSON.stringify({ url: "https://www.douyin.com/user/SEC_PREVIEW", count: 1 }),
+    });
+    const guestPreviewBody = await guestPreview.json();
+    expect(guestPreview.status).toBe(200);
+    expect(guestPreviewBody.data.preview_count).toBe(1);
+    expect(guestPreviewBody.data.items[0].download_url).toContain("/api/v1/download");
+
+    const guestVideos = await app.request("/api/v1/profile/SEC_PREVIEW/videos?count=1");
+    const guestVideosBody = await guestVideos.json();
+    expect(guestVideos.status).toBe(200);
+    expect(guestVideosBody.data.profile_id).toBe("SEC_PREVIEW");
+    expect(guestVideosBody.data.preview_count).toBe(1);
+
     const register = await app.request("/api/v1/auth/register", {
       method: "POST",
       body: JSON.stringify({ code: "PREVIEW-1", username: "preview_user", password: "password123" }),
