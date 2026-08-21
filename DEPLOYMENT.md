@@ -1,8 +1,8 @@
-# Deployment Guide
+# 中文部署文档
 
-This project can run as a lightweight Node service behind Nginx. The examples below use `dy.devforai.cn`.
+本项目可作为轻量 Node.js 服务运行，并通过 Nginx 配置域名和 HTTPS。以下示例域名为 `dy.devforai.cn`。
 
-## 1. Local Verification
+## 一、本地检查
 
 ```bash
 pnpm install
@@ -12,18 +12,56 @@ pnpm smoke:node
 pnpm smoke:admin
 ```
 
-## 2. Environment Variables
+全部命令通过后再上传服务器。
 
-Create a `.env` file or configure these variables in your process manager:
+## 二、服务器环境
+
+推荐配置：
+
+- Ubuntu 22.04 或更高版本
+- Node.js 22
+- pnpm
+- Nginx
+- Chromium
+- FFmpeg（仅智能口播功能需要）
+
+安装基础软件：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y nginx chromium-browser ffmpeg
+corepack enable
+corepack prepare pnpm@11.17.0 --activate
+```
+
+不同系统的 Chromium 命令可能是 `chromium`，可使用下面的命令确认：
+
+```bash
+command -v chromium-browser || command -v chromium
+```
+
+## 三、上传项目
+
+```bash
+sudo mkdir -p /www/wwwroot/dy.devforai.cn
+sudo chown -R "$USER":"$USER" /www/wwwroot/dy.devforai.cn
+cd /www/wwwroot/dy.devforai.cn
+git clone https://github.com/Potato-Allens/Douyin-Watermark-Free-Parser.git .
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+## 四、环境变量
+
+创建 `.env` 文件，或在 systemd、宝塔面板等进程管理工具中配置：
 
 ```bash
 PORT=8000
-DATABASE_URL=/app/.data/app.db
+DATABASE_URL=/www/wwwroot/dy.devforai.cn/.data/app.db
 VIP_INIT_CODES=CODE-A,CODE-B
 VIP_SESSION_DAYS=30
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=change-this-password
-ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
 ONLINE_BASE_COUNT=0
 PARSE_RATE_LIMIT_PER_MINUTE=60
 MEDIA_RATE_LIMIT_PER_MINUTE=120
@@ -36,7 +74,7 @@ PUBLIC_AI_FEATURES_ENABLED=false
 PUBLIC_COMMENTS_FEATURES_ENABLED=false
 AI_RATE_LIMIT_PER_DAY=1000
 COMMENTS_RATE_LIMIT_PER_DAY=200
-COMMENT_STORE_DIR=/app/.data/comments
+COMMENT_STORE_DIR=/www/wwwroot/dy.devforai.cn/.data/comments
 COMMENTS_MAX_TOP_LEVEL_PER_JOB=50000
 COMMENTS_TASK_CACHE_LIMIT=200
 COMMENTS_PAGE_DELAY_MS=250
@@ -55,166 +93,180 @@ FFMPEG_PATH=/usr/bin/ffmpeg
 FFMPEG_TIMEOUT_MS=120000
 ```
 
-`ADMIN_TOTP_SECRET` is a Base32 secret that can be added to Google Authenticator. If it is empty and TOTP has never been bound, the `/admin` login page can generate a one-time scan QR after the admin username/password is verified; scan it and enter the 6-digit code to bind TOTP and sign in. After binding, the setup area is hidden and the API no longer returns or regenerates the QR/secret. Resetting a lost authenticator must be performed directly on the server rather than through the web console. Unauthenticated visitors receive only the login page; the backend workspace is rendered after a valid cookie login.
+请将 `ADMIN_PASSWORD` 改为高强度密码。首次绑定动态码时，后台登录页会在账号密码验证通过后生成一次性二维码；绑定成功后二维码入口自动隐藏。
 
-Homepage works and real comment viewing/export first try the lightweight HTTP interface. If Douyin returns an empty anti-bot response, Node automatically falls back to a headless Chromium page and captures the browser-generated signed response. Install Chromium on Linux and set `DOUYIN_CHROMIUM_PATH` when it is not in a standard path:
+## 五、创建 systemd 服务
 
-```bash
-sudo apt-get update
-sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
-command -v chromium-browser || command -v chromium
-```
-
-The comment backend is retained but its public workbench controls are hidden by default. Keep `PUBLIC_COMMENTS_FEATURES_ENABLED=false`; set it to `true` only when the feature is ready to reopen. Optional deeper reply pagination can use a server-side `DOUYIN_COOKIE`; never expose that cookie to browser JavaScript or commit it to Git.
-
-Real mouth-script recognition requires FFmpeg. The service downloads the parsed video, extracts a 16 kHz mono MP3, and calls Xiaomi `mimo-v2.5-asr`. Install and verify it before enabling ASR in `/admin`:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y ffmpeg
-ffmpeg -version
-```
-
-In `/admin` → **AI 模型**, enter the Xiaomi API Key, keep ASR endpoint `https://api.xiaomimimo.com/v1`, model `mimo-v2.5-asr`, click **测试语音识别**, enable it, and save. The Docker image already includes FFmpeg.
-
-Set `PUBLIC_AI_FEATURES_ENABLED=false` when the server should not expose public mouth-script/AI features. This removes the controls from the visible workbench and makes `/api/v1/ai/*` plus the batch AI routes return 404; source code and admin configuration remain available for later re-enabling.
-
-## 3. Node/systemd Deployment
-
-```bash
-git clone https://github.com/Potato-Allens/Douyin-Watermark-Free-Parser.git /www/wwwroot/dy.devforai.cn
-cd /www/wwwroot/dy.devforai.cn
-pnpm install --frozen-lockfile
-pnpm build
-```
-
-Create `/etc/systemd/system/douyin-parser.service`:
+创建 `/etc/systemd/system/douyin-parser.service`：
 
 ```ini
 [Unit]
-Description=Douyin Watermark-Free Parser
+Description=抖音无水印解析服务
 After=network.target
 
 [Service]
+Type=simple
 WorkingDirectory=/www/wwwroot/dy.devforai.cn
-Environment=PORT=8000
-Environment=DATABASE_URL=/www/wwwroot/dy.devforai.cn/.data/app.db
-Environment=ONLINE_BASE_COUNT=0
-Environment=ADMIN_USERNAME=admin
-Environment=ADMIN_PASSWORD=change-this-password
-Environment=ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
-Environment=DOUYIN_PROFILE_BROWSER=1
-Environment=DOUYIN_COMMENTS_BROWSER=1
-Environment=DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
-Environment=PUBLIC_AI_FEATURES_ENABLED=false
-Environment=ASR_MAX_CONCURRENCY=1
-Environment=ASR_MAX_QUEUE=20
-Environment=FFMPEG_PATH=/usr/bin/ffmpeg
-ExecStart=/usr/local/bin/pnpm start
+EnvironmentFile=/www/wwwroot/dy.devforai.cn/.env
+ExecStart=/usr/bin/env pnpm start
 Restart=always
 RestartSec=3
+User=root
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Start the service:
+启动服务：
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now douyin-parser
 sudo systemctl status douyin-parser
-curl http://127.0.0.1:8000/healthz
 ```
 
-## 4. Docker Deployment
+查看日志：
 
 ```bash
-git clone https://github.com/Potato-Allens/Douyin-Watermark-Free-Parser.git /opt/douyin-parser
-cd /opt/douyin-parser
-
-docker build -t douyin-parser .
-docker rm -f douyin-parser 2>/dev/null || true
-docker run -d \
-  --name douyin-parser \
-  --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 \
-  -e PORT=8000 \
-  -e DATABASE_URL=/app/.data/app.db \
-  -e VIP_INIT_CODES="CODE-A,CODE-B" \
-  -e ADMIN_USERNAME=admin \
-  -e ADMIN_PASSWORD="change-this-password" \
-  -e ADMIN_TOTP_SECRET="BASE32_TOTP_SECRET" \
-  -e DOUYIN_PROFILE_BROWSER=1 \
-  -e DOUYIN_COMMENTS_BROWSER=1 \
-  -e ONLINE_BASE_COUNT=0 \
-  douyin-parser
+sudo journalctl -u douyin-parser -f
 ```
 
-Verify:
+## 六、配置 Nginx
 
-```bash
-curl http://127.0.0.1:8000/healthz
-```
-
-## 5. Nginx Reverse Proxy
-
-Create a site config for `dy.devforai.cn`:
+创建 `/etc/nginx/sites-available/dy.devforai.cn`：
 
 ```nginx
 server {
-  listen 80;
-  server_name dy.devforai.cn;
+    listen 80;
+    server_name dy.devforai.cn;
 
-  client_max_body_size 20m;
+    client_max_body_size 20m;
 
-  location / {
-    proxy_pass http://127.0.0.1:8000;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header Range $http_range;
-    proxy_set_header If-Range $http_if_range;
-    proxy_buffering off;
-  }
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+    }
 }
 ```
 
-Reload Nginx:
+启用配置：
 
 ```bash
+sudo ln -s /etc/nginx/sites-available/dy.devforai.cn /etc/nginx/sites-enabled/dy.devforai.cn
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-## 6. HTTPS
-
-If Certbot is installed:
+## 七、开启 HTTPS
 
 ```bash
+sudo apt-get install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d dy.devforai.cn
-sudo nginx -t
-sudo systemctl reload nginx
+sudo certbot renew --dry-run
 ```
 
-If using a hosting panel, create an SSL certificate in the panel and keep the reverse proxy target as `http://127.0.0.1:8000`.
+证书完成后访问：
 
-## 7. Smoke Checks
+```text
+https://dy.devforai.cn/
+https://dy.devforai.cn/admin
+https://dy.devforai.cn/healthz
+```
+
+## 八、上线检查
 
 ```bash
-curl -i https://dy.devforai.cn/healthz
-curl -i https://dy.devforai.cn/favicon.svg
-curl -i https://dy.devforai.cn/site.webmanifest
-curl -i "https://dy.devforai.cn/api/v1/parse"
-curl -i https://dy.devforai.cn/designs
+curl -fsS https://dy.devforai.cn/healthz
+curl -I https://dy.devforai.cn/
+curl -I https://dy.devforai.cn/admin
 ```
 
-Expected:
+健康检查应返回：
 
-- `/healthz` returns `200 OK`.
-- `/site.webmanifest` returns `200 OK` with the app icon manifest.
-- `/api/v1/parse` without `url` returns `400` with `MISSING_URL`.
-- `/designs` shows Scheme A selected.
-- `/admin` opens the admin login page.
+```json
+{"ok":true,"code":"OK","message":"healthy"}
+```
+
+## 九、更新版本
+
+```bash
+cd /www/wwwroot/dy.devforai.cn
+git pull
+pnpm install --frozen-lockfile
+pnpm build
+sudo systemctl restart douyin-parser
+curl -fsS https://dy.devforai.cn/healthz
+```
+
+更新前建议备份 `.data`、`.env` 和当前源码。
+
+## 十、常见问题
+
+### 主页作品读取失败
+
+确认 Chromium 已安装，并检查：
+
+```bash
+echo "$DOUYIN_CHROMIUM_PATH"
+command -v chromium-browser || command -v chromium
+```
+
+### 视频可以加载但拖动进度失败
+
+确认 Nginx 未缓存媒体代理响应，并保留 `proxy_buffering off`。项目媒体代理已支持 HTTP Range。
+
+### 动态码登录异常
+
+确认服务器时间同步：
+
+```bash
+timedatectl status
+sudo timedatectl set-ntp true
+```
+
+### 批量任务速度较慢
+
+根据服务器配置调整：
+
+```bash
+BATCH_MAX_ACTIVE_TASKS=2
+BATCH_MAX_GLOBAL_CONCURRENCY=4
+```
+
+低配置服务器应使用较小并发，避免内存和带宽占用过高。
+
+### 关闭智能文案和评论功能
+
+```bash
+PUBLIC_AI_FEATURES_ENABLED=false
+PUBLIC_COMMENTS_FEATURES_ENABLED=false
+```
+
+关闭后前台隐藏相关入口，保留后端代码供后续开启。
+
+## 十一、Docker 部署
+
+```bash
+docker build -t douyin-parser .
+docker run -d \
+  --name douyin-parser \
+  --restart always \
+  -p 8000:8000 \
+  -v "$(pwd)/.data:/app/.data" \
+  --env-file .env \
+  douyin-parser
+```
+
+检查容器：
+
+```bash
+docker logs -f douyin-parser
+curl -fsS http://127.0.0.1:8000/healthz
+```

@@ -1,7 +1,7 @@
 {
   "name": "douyin-watermark-free-parser",
   "version": "0.1.0",
-  "description": "Douyin watermark-free video parser with API, web UI, preview, download, VIP activation, and batch parsing.",
+  "description": "轻量稳定的抖音无水印解析、预览、下载、会员与主页批量处理服务。",
   "type": "module",
   "private": true,
   "main": "src/index.ts",
