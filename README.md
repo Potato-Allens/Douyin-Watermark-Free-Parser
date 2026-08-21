@@ -1,21 +1,36 @@
 # 抖音无水印解析与批量下载工作台
 
-一套轻量、稳定的抖音视频解析服务，提供无水印视频解析、在线播放、单条下载、主页作品预览、会员批量任务、批量视频下载、封面与作品数据导出，以及中文管理后台。
+轻量、稳定的抖音内容解析项目，提供单条视频/图文解析、在线播放、下载、主页作品预览、会员批量任务、数据导出和中文管理后台。
+
+> **项目状态备注**：当前版本以单条解析、主页作品预览、会员批量解析和视频下载为主。评论采集与智能口播文案仍处于保留/未收口状态，线上前台已隐藏，当前版本不将这两项列为已完成功能。
+
+## 功能完成情况
+
+| 模块 | 状态 | 说明 |
+| --- | --- | --- |
+| 单条视频/图文解析 | ✅ 已完成 | 支持分享文案、短链接、详情链接；解析视频、图集和基础元数据 |
+| 无水印预览与下载 | ✅ 已完成 | 同源媒体代理、HTTP Range、在线播放、单条下载 |
+| 首页示例视频轮播 | ✅ 已完成 | 用户尚未解析时轮播示例，解析后切换至目标作品 |
+| 主页作品获取 | ✅ 已完成 | 支持主页链接、目标数量、增量加载、实时进度和作品预览 |
+| 会员批量解析 | ✅ 已完成 | 持久化队列、并发处理、优先级、离开页面后恢复进度 |
+| 批量视频下载 | ✅ 已完成 | 对已完成结果逐条触发浏览器下载 |
+| 数据与封面导出 | ✅ 已完成 | JSON、CSV、文案数据、封面文件和封面 ZIP |
+| 会员、套餐与激活码 | ✅ 已完成 | 激活注册、登录、权益、套餐参数、用户管理 |
+| 中文管理后台 | ✅ 已完成 | 动态码、限流、安全策略、审计、任务与调用统计 |
+| 评论查看/采集/导出 | ⚠️ 未收口，前台隐藏 | 后端保留实验代码；大批量分页、全量导出和稳定性仍待完整验收 |
+| 智能口播识别与改写 | ⏸️ 已关闭，前台隐藏 | 源码保留；依赖模型服务与 FFmpeg，当前线上版本关闭 |
+| Cloudflare/Deno/Vercel | 🧪 基础入口 | 已提供入口和类型检查；主页浏览器采集以 Node.js + Chromium 部署为主 |
 
 ## 主要功能
 
-- 支持粘贴抖音分享文案、短链接、视频详情链接和用户主页链接。
-- 自动识别链接并解析视频或图文内容。
-- 返回无水印播放地址，并通过同源代理实现稳定预览与下载。
-- 解析标题、介绍、作者、点赞、评论、转发、收藏、封面和背景音乐。
-- 网站首页使用指定示例视频自动轮播，用户解析后立即切换到自己的视频。
-- 支持主页作品预览、输入数量增量加载和可视化进度。
-- 支持会员批量解析、持久化任务、队列进度和历史任务恢复。
-- 支持批量下载视频、封面压缩包、作品数据和文案数据。
-- 支持激活码注册、账号密码登录、套餐权益、并发数和队列优先级。
-- 中文管理后台提供会员、激活码、套餐、限流、安全审计和任务管理。
-- 支持管理员账号密码与谷歌身份验证器六位动态码。
-- 评论采集和智能文案代码保留，前台默认关闭，后续可按需开启。
+- 自动识别抖音分享文案中的链接。
+- 解析标题、介绍、作者、点赞、评论数、转发、收藏、封面和背景音乐。
+- 视频与图文统一数据结构，缺失标量返回 `null`，列表返回数组。
+- 主页作品按输入数量增量获取，并展示可视化进度。
+- 会员批量任务支持队列、并发、优先级、持久化与历史恢复。
+- 批量结果支持视频下载、封面 ZIP、作品 JSON/CSV 导出。
+- 后台支持会员与套餐统一管理、激活码、动态码登录、限流和安全审计。
+- 移动端与桌面端响应式布局。
 
 ## 技术栈
 
@@ -24,9 +39,9 @@
 - Node.js 22
 - pnpm
 - Vitest
-- Playwright
+- Playwright Core + Chromium
 - SQLite 兼容持久化存储
-- Nginx 与 HTTPS
+- Nginx + HTTPS
 
 ## 快速启动
 
@@ -35,13 +50,9 @@ pnpm install
 pnpm dev
 ```
 
-默认访问地址：
+默认地址：`http://localhost:8000`
 
-```text
-http://localhost:8000
-```
-
-## 测试与构建
+### 测试与构建
 
 ```bash
 pnpm test
@@ -54,13 +65,15 @@ pnpm smoke:admin
 
 | 地址 | 用途 |
 | --- | --- |
-| `/` | 视频解析、预览、下载和批量工作台 |
+| `/` | 视频解析、预览、下载和批量工作区 |
 | `/designs` | 界面方案预览 |
-| `/admin` | 中文管理后台 |
+| `/admin` | 管理员登录与中文管理后台 |
 | `/healthz` | 服务健康检查 |
 | `/site.webmanifest` | 网站应用清单 |
 
-## 兼容接口
+## 接口概览
+
+### 兼容接口
 
 ```http
 GET /?url=<douyin-url>
@@ -69,62 +82,28 @@ GET /api/hello?url=<douyin-url>
 GET /api/hello?data&url=<douyin-url>
 ```
 
-- `GET /?url=` 返回纯文本无水印播放地址。
-- `GET /?data&url=` 返回兼容格式的 JSON 数据。
-
-## 规范解析接口
+### 规范解析接口
 
 ```http
 GET /api/v1/parse?url=<douyin-url>
 ```
 
-成功响应：
-
-```json
-{
-  "ok": true,
-  "code": "OK",
-  "message": "success",
-  "data": {
-    "source": { "input_url": "", "resolved_url": "", "aweme_id": "" },
-    "author": { "nickname": null, "signature": null },
-    "stats": { "comment_count": null, "digg_count": null, "share_count": null, "collect_count": null },
-    "content": { "desc": null, "create_timestamp": null, "created_at": null },
-    "media": { "type": "video", "video_url": null, "cover_url": null, "image_url_list": [] },
-    "music": { "title": null, "author": null, "cover_url": null, "play_url": null },
-    "download": { "video_proxy_url": null, "download_url": null, "filename": null },
-    "compat": {}
-  }
-}
-```
-
-错误响应：
-
-```json
-{
-  "ok": false,
-  "code": "MISSING_URL",
-  "message": "url query parameter is required",
-  "error": { "detail": "" }
-}
-```
-
-固定错误码：
+统一错误码：
 
 ```text
 MISSING_URL, INVALID_URL, FETCH_FAILED, PARSE_FAILED, UNSUPPORTED_CONTENT, INTERNAL_ERROR
 ```
 
-## 媒体代理与下载
+### 媒体接口
 
 ```http
 GET /api/v1/media?url=<encoded-media-url>
 GET /api/v1/download?url=<encoded-media-url>&filename=<name.mp4>
 ```
 
-媒体代理支持 HTTP Range，可用于网页播放器拖动进度和断点读取。
+媒体代理支持 HTTP Range，可用于播放进度拖动与断点读取。
 
-## 会员与批量接口
+### 会员与批量接口
 
 ```http
 GET  /api/v1/plans
@@ -141,74 +120,99 @@ GET  /api/v1/batch/:id
 GET  /api/v1/batch/:id/export?type=json|items_csv|scripts|scripts_csv|covers|covers_zip
 ```
 
-主页作品预览接口支持输入目标数量、增量加载和流式进度。批量任务会持久化保存，刷新或离开页面后仍可恢复。
-
-## 管理后台接口
-
-```http
-GET  /admin
-POST /api/admin/login
-POST /api/admin/logout
-GET  /api/admin/totp
-POST /api/admin/totp/setup
-POST /api/admin/totp/verify
-GET  /api/admin/dashboard
-GET  /api/admin/jobs
-GET  /api/admin/users
-POST /api/admin/users/:id/plan
-POST /api/admin/users/:id/disable
-GET  /api/admin/plans
-POST /api/admin/plans
-GET  /api/admin/codes
-POST /api/admin/codes
-GET  /api/admin/rate-limits
-POST /api/admin/rate-limits
-GET  /api/admin/security
-POST /api/admin/security
-GET  /api/admin/audit-logs
-```
-
-后台采用服务端会话、HttpOnly Cookie、CSRF 校验、登录失败锁定、动态码验证和安全审计。未登录时仅返回独立登录页，登录成功后才渲染后台工作区。
-
-## 核心环境变量
-
-```bash
-PORT=8000
-DATABASE_URL=/app/.data/app.db
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password
-ONLINE_BASE_COUNT=0
-PARSE_RATE_LIMIT_PER_MINUTE=60
-MEDIA_RATE_LIMIT_PER_MINUTE=120
-BATCH_RATE_LIMIT_PER_HOUR=30
-BATCH_MAX_ACTIVE_TASKS=2
-BATCH_MAX_GLOBAL_CONCURRENCY=4
-PUBLIC_AI_FEATURES_ENABLED=false
-PUBLIC_COMMENTS_FEATURES_ENABLED=false
-DOUYIN_PROFILE_BROWSER=1
-DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
-```
-
-完整部署参数和操作步骤请查看 [中文部署文档](./DEPLOYMENT.md)。
-
-## 多平台入口
-
-- Node.js：`src/node.ts`
-- Cloudflare Workers：`src/worker.ts`
-- Deno Deploy：`src/deno.ts`
-- Vercel：`api/hello.ts`
-- Docker：`Dockerfile`
-
-## 软件开发工具包导出
+## 软件开发工具包
 
 ```ts
-import { parseDouyinUrl, getNoWatermarkUrl, parseDouyinHtml } from "douyin-watermark-free-parser";
+import {
+  parseDouyinUrl,
+  getNoWatermarkUrl,
+  parseDouyinHtml,
+} from "douyin-watermark-free-parser";
 ```
 
-- `parseDouyinUrl(url, options?)`：解析抖音链接。
-- `getNoWatermarkUrl(url, options?)`：获取无水印视频地址。
-- `parseDouyinHtml(html, sourceUrl?)`：解析已获取的页面内容。
+## 项目结构
 
-## 使用说明
+```text
+Douyin-Watermark-Free-Parser/
+├─ api/                         # Vercel 路由入口与生成产物
+│  ├─ hello.ts
+│  ├─ [...path].ts
+│  ├─ v1/parse.ts
+│  └─ _generated/
+├─ docs/
+│  └─ short-video-creator-workbench-dev-plan.md  # 产品与技术开发文档
+├─ public/                      # 公共静态资源目录
+├─ scripts/                     # 构建、验证、真实链路和部署冒烟脚本
+├─ src/
+│  ├─ core/                     # 与 HTTP 路由解耦的核心业务
+│  │  ├─ parser.ts              # 视频/图文 HTML 与数据解析
+│  │  ├─ profile.ts             # 主页作品浏览器采集
+│  │  ├─ batch.ts               # 批量任务、队列与持久化
+│  │  ├─ media-proxy.ts         # 媒体代理、Range 与下载
+│  │  ├─ vip.ts                 # 会员、套餐和激活码
+│  │  ├─ creator.ts             # 智能文案保留模块
+│  │  ├─ asr.ts                 # 口播识别保留模块
+│  │  ├─ comments.ts            # 评论采集保留模块
+│  │  ├─ comment-store.ts       # 评论任务存储保留模块
+│  │  ├─ errors.ts              # 统一业务错误
+│  │  ├─ types.ts               # 核心类型
+│  │  └─ index.ts               # 核心导出
+│  ├─ app.ts                    # Hono 应用、路由与中间件
+│  ├─ ui.ts                     # 前台工作区界面
+│  ├─ admin-login-ui.ts         # 独立后台登录页
+│  ├─ admin-ui.ts               # 后台工作区
+│  ├─ designs-ui.ts             # 设计方案页
+│  ├─ node.ts                   # Node.js 入口
+│  ├─ worker.ts                 # Cloudflare Workers 入口
+│  ├─ deno.ts                   # Deno Deploy 入口
+│  └─ index.ts                  # 软件开发工具包导出
+├─ tests/                       # 解析、接口、评论和口播模块测试
+├─ .dockerignore
+├─ .gitignore
+├─ deno.json
+├─ DEPLOYMENT.md                # 中文部署文档
+├─ Dockerfile
+├─ package.json
+├─ pnpm-lock.yaml
+├─ tsconfig.json
+├─ vercel.json
+├─ VERIFICATION.md              # 验证记录
+└─ wrangler.toml
+```
 
-请合理控制调用频率并妥善保管后台账号、动态码密钥和模型密钥。批量任务建议根据服务器 CPU、内存和带宽设置并发数。
+运行时目录 `.data/`、本地部署目录 `.deploy/`、依赖目录 `node_modules/` 和构建目录 `out/` 已从 Git 跟踪中排除。
+
+## 环境变量与密钥
+
+- 本地配置放入 `.env`，仓库仅保存 `.env.example` 类型的占位示例。
+- 管理员密码、模型 Key、动态码密钥、会话密钥和 SSH 私钥严禁写入源码、提交记录、截图或日志。
+- `.env`、`.env.*`、`.deploy/`、`.data/` 已写入 `.gitignore`。
+- 部署完成后及时移除临时 SSH 公钥与本地临时私钥。
+- 发现密钥曾被公开时，应立即在对应平台轮换并使旧值失效。
+
+## 注意事项
+
+1. 主页采集依赖 Chromium，部署前确认 `DOUYIN_CHROMIUM_PATH` 指向实际程序。
+2. 抖音页面结构或风控策略变化时，解析与主页采集可能需要同步维护。
+3. 批量并发应结合 CPU、内存、带宽和 Chromium 资源设置。
+4. 自动有声播放受浏览器自动播放策略影响；页面会尝试启动声音，部分浏览器仍需要首次点击。
+5. 批量视频下载采用浏览器逐条下载，浏览器可能弹出“允许多个文件下载”的确认。
+6. 管理后台首次绑定动态码后，二维码入口自动隐藏；动态码设备与恢复信息需妥善保管。
+7. 评论与智能口播模块目前处于隐藏/保留状态，打开环境开关前应完成专项验收。
+8. 真实链接测试会访问抖音页面并消耗网络、CPU 与带宽资源。
+9. 下载与处理内容时，请确认内容使用范围，并尊重创作者权益与平台规则。
+
+## 禁止商用
+
+本项目仅用于个人学习、技术研究、功能验证和内部测试，**禁止任何形式的商业使用**，包括但不限于：
+
+- 对外收费解析、下载或数据采集服务；
+- 会员收费、接口转售、额度转卖或二次分发获利；
+- 广告变现、企业生产业务、代运营或批量营销；
+- 将本项目或其修改版本作为商业产品的一部分发布。
+
+详细条款见 [LICENSE.md](./LICENSE.md)。使用、复制或修改本项目即表示接受其中的非商业使用条件。
+
+## 部署
+
+完整环境变量、Nginx、HTTPS、systemd、Docker 和更新步骤见 [中文部署文档](./DEPLOYMENT.md)。

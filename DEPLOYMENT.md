@@ -1,8 +1,21 @@
 # 中文部署文档
 
-本项目可作为轻量 Node.js 服务运行，并通过 Nginx 配置域名和 HTTPS。以下示例域名为 `dy.devforai.cn`。
+本文档适用于 Node.js + Chromium + Nginx 的完整部署方式。线上主链路以 Node.js 运行；Cloudflare Workers、Deno Deploy 和 Vercel 入口主要用于兼容解析接口。
 
-## 一、本地检查
+## 0. 上线功能状态
+
+| 模块 | 上线状态 | 环境开关/依赖 |
+| --- | --- | --- |
+| 单条解析、预览、下载 | 已启用 | Node.js、Nginx |
+| 主页作品预览与增量获取 | 已启用 | Chromium、`DOUYIN_PROFILE_BROWSER=1` |
+| 会员批量任务与视频下载 | 已启用 | 持久化目录、队列参数 |
+| 会员、套餐、激活码、后台 | 已启用 | 管理员密码、动态码 |
+| 评论采集与导出 | 未收口，前台隐藏 | `PUBLIC_COMMENTS_FEATURES_ENABLED=false` |
+| 智能口播与文案改写 | 已关闭，前台隐藏 | `PUBLIC_AI_FEATURES_ENABLED=false` |
+
+隐藏模块的源码仍保留。正式打开前应完成接口、资源、限流、失败恢复与大数据量专项验收。
+
+## 1. 本地检查
 
 ```bash
 pnpm install
@@ -12,35 +25,24 @@ pnpm smoke:node
 pnpm smoke:admin
 ```
 
-全部命令通过后再上传服务器。
+## 2. 服务器环境
 
-## 二、服务器环境
-
-推荐配置：
-
-- Ubuntu 22.04 或更高版本
+- Ubuntu 22.04 或更新版本
 - Node.js 22
-- pnpm
+- pnpm 11
 - Nginx
 - Chromium
-- FFmpeg（仅智能口播功能需要）
-
-安装基础软件：
+- FFmpeg（仅保留的口播模块使用）
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y nginx chromium-browser ffmpeg
 corepack enable
 corepack prepare pnpm@11.17.0 --activate
-```
-
-不同系统的 Chromium 命令可能是 `chromium`，可使用下面的命令确认：
-
-```bash
 command -v chromium-browser || command -v chromium
 ```
 
-## 三、上传项目
+## 3. 获取项目
 
 ```bash
 sudo mkdir -p /www/wwwroot/dy.devforai.cn
@@ -49,19 +51,26 @@ cd /www/wwwroot/dy.devforai.cn
 git clone https://github.com/Potato-Allens/Douyin-Watermark-Free-Parser.git .
 pnpm install --frozen-lockfile
 pnpm build
+mkdir -p .data/comments
 ```
 
-## 四、环境变量
+## 4. 环境变量
 
-创建 `.env` 文件，或在 systemd、宝塔面板等进程管理工具中配置：
+创建 `/www/wwwroot/dy.devforai.cn/.env`：
 
 ```bash
 PORT=8000
 DATABASE_URL=/www/wwwroot/dy.devforai.cn/.data/app.db
-VIP_INIT_CODES=CODE-A,CODE-B
-VIP_SESSION_DAYS=30
+
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password
+ADMIN_PASSWORD=请替换为高强度随机密码
+ADMIN_LOGIN_MAX_FAILURES=5
+ADMIN_LOGIN_WINDOW_MINUTES=15
+ADMIN_LOGIN_LOCK_MINUTES=15
+
+VIP_INIT_CODES=
+VIP_SESSION_DAYS=30
+
 ONLINE_BASE_COUNT=0
 PARSE_RATE_LIMIT_PER_MINUTE=60
 MEDIA_RATE_LIMIT_PER_MINUTE=120
@@ -70,20 +79,21 @@ BATCH_MAX_ACTIVE_TASKS=2
 BATCH_MAX_GLOBAL_CONCURRENCY=4
 BATCH_QUEUE_PRESSURE_ONLINE=5
 BATCH_QUEUE_PRESSURE_STEP=5
+
 PUBLIC_AI_FEATURES_ENABLED=false
 PUBLIC_COMMENTS_FEATURES_ENABLED=false
 AI_RATE_LIMIT_PER_DAY=1000
 COMMENTS_RATE_LIMIT_PER_DAY=200
+
+DOUYIN_PROFILE_BROWSER=1
+DOUYIN_COMMENTS_BROWSER=0
+DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
+
 COMMENT_STORE_DIR=/www/wwwroot/dy.devforai.cn/.data/comments
 COMMENTS_MAX_TOP_LEVEL_PER_JOB=50000
 COMMENTS_TASK_CACHE_LIMIT=200
 COMMENTS_PAGE_DELAY_MS=250
-DOUYIN_PROFILE_BROWSER=1
-DOUYIN_COMMENTS_BROWSER=1
-DOUYIN_CHROMIUM_PATH=/usr/bin/chromium-browser
-ADMIN_LOGIN_MAX_FAILURES=5
-ADMIN_LOGIN_WINDOW_MINUTES=15
-ADMIN_LOGIN_LOCK_MINUTES=15
+
 ASR_MAX_CONCURRENCY=1
 ASR_MAX_QUEUE=20
 ASR_MAX_VIDEO_BYTES=125829120
@@ -93,15 +103,20 @@ FFMPEG_PATH=/usr/bin/ffmpeg
 FFMPEG_TIMEOUT_MS=120000
 ```
 
-请将 `ADMIN_PASSWORD` 改为高强度密码。首次绑定动态码时，后台登录页会在账号密码验证通过后生成一次性二维码；绑定成功后二维码入口自动隐藏。
+配置原则：
 
-## 五、创建 systemd 服务
+- `.env` 权限设为仅服务账号可读：`chmod 600 .env`。
+- 管理员密码、模型 Key、动态码密钥和会话密钥仅写入环境变量或后台加密配置。
+- Git 仓库、部署脚本、终端记录和截图中只保留占位值。
+- 首次绑定动态码后，二维码入口会自动隐藏。
+
+## 5. systemd 服务
 
 创建 `/etc/systemd/system/douyin-parser.service`：
 
 ```ini
 [Unit]
-Description=抖音无水印解析服务
+Description=Douyin parser service
 After=network.target
 
 [Service]
@@ -117,21 +132,16 @@ User=root
 WantedBy=multi-user.target
 ```
 
-启动服务：
-
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now douyin-parser
 sudo systemctl status douyin-parser
-```
-
-查看日志：
-
-```bash
 sudo journalctl -u douyin-parser -f
 ```
 
-## 六、配置 Nginx
+生产环境可创建独立低权限服务账号，并将项目目录和 `.data` 所有权交给该账号。
+
+## 6. Nginx
 
 创建 `/etc/nginx/sites-available/dy.devforai.cn`：
 
@@ -156,15 +166,13 @@ server {
 }
 ```
 
-启用配置：
-
 ```bash
 sudo ln -s /etc/nginx/sites-available/dy.devforai.cn /etc/nginx/sites-enabled/dy.devforai.cn
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-## 七、开启 HTTPS
+## 7. HTTPS
 
 ```bash
 sudo apt-get install -y certbot python3-certbot-nginx
@@ -172,7 +180,7 @@ sudo certbot --nginx -d dy.devforai.cn
 sudo certbot renew --dry-run
 ```
 
-证书完成后访问：
+访问入口：
 
 ```text
 https://dy.devforai.cn/
@@ -180,7 +188,7 @@ https://dy.devforai.cn/admin
 https://dy.devforai.cn/healthz
 ```
 
-## 八、上线检查
+## 8. 上线验收
 
 ```bash
 curl -fsS https://dy.devforai.cn/healthz
@@ -188,70 +196,96 @@ curl -I https://dy.devforai.cn/
 curl -I https://dy.devforai.cn/admin
 ```
 
-健康检查应返回：
+健康检查响应：
 
 ```json
 {"ok":true,"code":"OK","message":"healthy"}
 ```
 
-## 九、更新版本
+人工验收清单：
+
+1. 分享链接能够解析并预览。
+2. 视频进度可拖动，下载响应文件名正常。
+3. 主页链接能够按目标数量加载并显示进度。
+4. 会员登录后能够创建批量任务并恢复历史进度。
+5. 批量下载和封面 ZIP 能够生成。
+6. `/admin` 在未登录时只展示独立登录页。
+7. 动态码首次绑定成功后二维码设置入口隐藏。
+8. 评论和口播入口在当前配置下保持隐藏。
+
+## 9. 更新版本
 
 ```bash
 cd /www/wwwroot/dy.devforai.cn
+cp -a .data ".data.backup.$(date +%Y%m%d%H%M%S)"
 git pull
 pnpm install --frozen-lockfile
+pnpm test
 pnpm build
 sudo systemctl restart douyin-parser
 curl -fsS https://dy.devforai.cn/healthz
 ```
 
-更新前建议备份 `.data`、`.env` 和当前源码。
+`.env` 单独保管，升级包中不携带该文件。
 
-## 十、常见问题
+## 10. 临时 SSH 密钥清理
+
+部署期间使用临时公钥时，结束后从服务账号的 `~/.ssh/authorized_keys` 精确移除对应行，并删除本地临时私钥与公钥。保留长期运维密钥时，应使用独立名称、口令和最小权限账号。
+
+检查仓库提交内容：
+
+```bash
+git ls-files | grep -E '(^|/)(\.env|.*\.pem|id_rsa|id_ed25519)$' || true
+git grep -n -E 'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY|ghp_[A-Za-z0-9]+' || true
+```
+
+## 11. 常见问题
 
 ### 主页作品读取失败
-
-确认 Chromium 已安装，并检查：
 
 ```bash
 echo "$DOUYIN_CHROMIUM_PATH"
 command -v chromium-browser || command -v chromium
+sudo journalctl -u douyin-parser -n 200 --no-pager
 ```
 
-### 视频可以加载但拖动进度失败
+同时检查服务器时间、网络、Chromium 依赖和抖音页面响应。
 
-确认 Nginx 未缓存媒体代理响应，并保留 `proxy_buffering off`。项目媒体代理已支持 HTTP Range。
+### 视频加载后进度拖动异常
 
-### 动态码登录异常
+保留 `proxy_buffering off`，确认媒体接口返回 `Accept-Ranges`、`Content-Range` 与 `206 Partial Content`。
 
-确认服务器时间同步：
+### 动态码校验异常
 
 ```bash
 timedatectl status
 sudo timedatectl set-ntp true
 ```
 
-### 批量任务速度较慢
+### 批量任务资源占用较高
 
-根据服务器配置调整：
+低配置服务器可先使用：
 
 ```bash
-BATCH_MAX_ACTIVE_TASKS=2
-BATCH_MAX_GLOBAL_CONCURRENCY=4
+BATCH_MAX_ACTIVE_TASKS=1
+BATCH_MAX_GLOBAL_CONCURRENCY=2
 ```
 
-低配置服务器应使用较小并发，避免内存和带宽占用过高。
-
-### 关闭智能文案和评论功能
+### 隐藏评论与口播模块
 
 ```bash
 PUBLIC_AI_FEATURES_ENABLED=false
 PUBLIC_COMMENTS_FEATURES_ENABLED=false
+DOUYIN_COMMENTS_BROWSER=0
 ```
 
-关闭后前台隐藏相关入口，保留后端代码供后续开启。
+修改后重启服务：
 
-## 十一、Docker 部署
+```bash
+sudo systemctl restart douyin-parser
+```
+
+## 12. Docker
 
 ```bash
 docker build -t douyin-parser .
@@ -264,9 +298,11 @@ docker run -d \
   douyin-parser
 ```
 
-检查容器：
-
 ```bash
 docker logs -f douyin-parser
 curl -fsS http://127.0.0.1:8000/healthz
 ```
+
+## 13. 使用边界
+
+本项目仅用于个人学习、技术研究、功能验证和内部测试，禁止商业使用。完整条款见 [LICENSE.md](./LICENSE.md)。
