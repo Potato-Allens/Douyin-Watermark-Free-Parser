@@ -276,6 +276,13 @@ describe("api routes", () => {
       expect(html).toContain('class="tab-nav"');
       expect(html).toContain('data-tab="overview"');
       expect(html).toContain('data-tab="auth"');
+      expect(html).toContain('data-tab="members"');
+      expect(html).not.toContain('data-tab="plans"');
+      expect(html).toContain('data-member-view="users"');
+      expect(html).toContain('data-member-view="codes"');
+      expect(html).toContain('data-member-view="plans"');
+      expect(html).toContain('id="memberPlan"');
+      expect(html).toContain('id="codePlan"');
       expect(html).toContain('id="tab-security" class="tab-panel"');
       expect(html).toContain("function switchTab(name)");
       expect(html).toContain("/api/admin/logout");
