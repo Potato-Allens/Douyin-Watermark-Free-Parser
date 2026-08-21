@@ -58,6 +58,14 @@ describe("api routes", () => {
     expect(html).toContain('id="queuePosition"');
     expect(html).toContain('id="queuePriority"');
     expect(html).toContain('id="centerDownloadBtn"');
+    expect(html).toContain('id="video" controls autoplay playsinline');
+    expect(html).not.toContain('id="video" controls autoplay muted');
+    expect(html).toContain("https://v.douyin.com/mI1ZbHQ132s/");
+    expect(html).toContain("https://v.douyin.com/xt4KfcbcJ2k/");
+    expect(html).toContain("https://v.douyin.com/ltdaTY9l8Z0/");
+    expect(html).toContain("https://v.douyin.com/zQuchcx2Rj8/");
+    expect(html).toContain('id="batchVideosBtn"');
+    expect(html).toContain("function downloadBatchVideos()");
     expect(html).toContain('id="commentsBtn"');
     expect(html).toContain('id="commentsBtn" class="btn hidden"');
     expect(html).toContain('id="commentWorkspace" class="comment-workspace hidden"');
